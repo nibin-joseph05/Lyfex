@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Dimensions, Platform, ActivityIndicator } from 'react-native';
-import { Camera, CameraType } from 'expo-camera';
+import { CameraView, useCameraPermissions } from 'expo-camera';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
@@ -10,7 +10,7 @@ import Animated, { FadeIn, FadeInDown, FadeOut } from 'react-native-reanimated';
 const { width, height } = Dimensions.get('window');
 
 export default function DetectionPage() {
-  const [hasPermission, setHasPermission] = useState(null);
+  const [permission, requestPermission] = useCameraPermissions();
   const [isCameraReady, setIsCameraReady] = useState(false);
   const cameraRef = useRef(null);
   const router = useRouter();
@@ -28,17 +28,16 @@ export default function DetectionPage() {
   const [alerts, setAlerts] = useState([]);
 
   useEffect(() => {
-    (async () => {
-      const cameraStatus = await Camera.requestCameraPermissionsAsync();
-      setHasPermission(cameraStatus.status === 'granted');
-    })();
+    if (permission && !permission.granted) {
+      requestPermission();
+    }
   }, []);
 
   const onCameraReady = () => {
     setIsCameraReady(true);
   };
 
-  if (hasPermission === null) {
+  if (!permission) {
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color="#64FFDA" />
@@ -46,7 +45,7 @@ export default function DetectionPage() {
       </View>
     );
   }
-  if (hasPermission === false) {
+  if (!permission.granted) {
     return (
       <View style={styles.errorContainer}>
         <Ionicons name="camera-off-outline" size={50} color="#FF6B6B" />
@@ -74,26 +73,25 @@ export default function DetectionPage() {
         </View>
 
         <View style={styles.cameraContainer}>
-          {isCameraReady ? (
-            <Camera
-              ref={cameraRef}
-              style={styles.camera}
-              type={CameraType.front}
-              onCameraReady={onCameraReady}
-              ratio="16:9"
-            >
-              <View style={styles.cameraOverlay}>
+          <CameraView
+            ref={cameraRef}
+            style={styles.camera}
+            facing="front"
+            onCameraReady={onCameraReady}
+          >
+            <View style={styles.cameraOverlay}>
+              {!isCameraReady ? (
+                <>
+                  <ActivityIndicator size="large" color="#64FFDA" />
+                  <Text style={styles.overlayText}>Initializing Camera...</Text>
+                </>
+              ) : (
                 <Text style={styles.overlayText}>
                   Position your face clearly in the frame.
                 </Text>
-              </View>
-            </Camera>
-          ) : (
-            <View style={styles.cameraLoading}>
-              <ActivityIndicator size="large" color="#64FFDA" />
-              <Text style={styles.cameraLoadingText}>Initializing Camera...</Text>
+              )}
             </View>
-          )}
+          </CameraView>
         </View>
 
         <Animated.ScrollView
