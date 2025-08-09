@@ -6,8 +6,12 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
+import axios from 'axios';
 
 const { width, height } = Dimensions.get('window');
+
+// Use only EXPO_PUBLIC_ environment variables (works with app.json)
+const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || 'http://192.168.220.6:8000';
 
 export default function DetectionPage() {
   const [permission, requestPermission] = useCameraPermissions();
@@ -32,10 +36,70 @@ export default function DetectionPage() {
     setIsCameraReady(true);
   };
 
-  const toggleScanning = () => {
+  const captureImage = async () => {
+    if (cameraRef.current && isCameraReady) {
+      try {
+        const photo = await cameraRef.current.takePictureAsync({ base64: true });
+        return photo;
+      } catch (error) {
+        console.error('Error capturing image:', error);
+        setAlerts([...alerts, 'Failed to capture image']);
+        return null;
+      }
+    }
+    return null;
+  };
+
+  const sendToBackend = async (photo) => {
+    try {
+      console.log('Using backend URL:', BACKEND_URL); // Debug log
+      
+      const formData = new FormData();
+      formData.append('file', {
+        uri: photo.uri,
+        name: 'photo.jpg',
+        type: 'image/jpeg',
+      });
+
+      const response = await axios.post(`${BACKEND_URL}/analyze`, formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+        timeout: 10000, // 10 second timeout
+      });
+
+      setHealthMetrics(response.data);
+      setAlerts([...alerts, 'Analysis completed successfully']);
+    } catch (error) {
+      console.error('Error sending image to backend:', error);
+      console.error('Backend URL being used:', BACKEND_URL);
+      
+      let errorMessage = 'Failed to analyze image';
+      if (error.code === 'ECONNABORTED') {
+        errorMessage = 'Request timeout - check your network connection';
+      } else if (error.response) {
+        errorMessage = `Server error: ${error.response.status}`;
+      } else if (error.request) {
+        errorMessage = 'Network error - unable to reach server';
+      }
+      
+      setAlerts([...alerts, errorMessage]);
+    }
+  };
+
+  const toggleScanning = async () => {
     setIsScanning(!isScanning);
-    // Add your health detection logic here
-    console.log(isScanning ? 'Stopping health scan' : 'Starting health scan');
+    if (!isScanning) {
+      // Start scanning
+      const photo = await captureImage();
+      if (photo) {
+        await sendToBackend(photo);
+      } else {
+        setIsScanning(false); // Stop scanning if image capture fails
+      }
+    } else {
+      console.log('Stopping health scan');
+    }
   };
 
   if (!permission) {
