@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Dimensions, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Dimensions, ActivityIndicator, ScrollView } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -25,12 +25,21 @@ export default function DetectionPage() {
     respiratoryRate: 'N/A',
     stressLevel: 'N/A',
     emotion: 'N/A',
+    fatigue: 'N/A',
     facialAsymmetry: 'N/A',
     tremor: 'N/A',
+    eyeMovement: 'N/A',
     skinAnalysis: 'N/A',
-    fatigue: 'N/A',
+    skinColor: 'N/A',
+    hydrationStatus: 'N/A',
+    overallHealthScore: 'N/A',
+    healthStatus: 'N/A',
+    recommendations: [], // Changed to array for recommendations
   });
   const [alerts, setAlerts] = useState([]);
+  const [analysisQuality, setAnalysisQuality] = useState('N/A');
+  const [analysisTimestamp, setAnalysisTimestamp] = useState('N/A');
+
 
   const onCameraReady = () => {
     setIsCameraReady(true);
@@ -43,7 +52,7 @@ export default function DetectionPage() {
         return photo;
       } catch (error) {
         console.error('Error capturing image:', error);
-        setAlerts([...alerts, 'Failed to capture image']);
+        setAlerts(prevAlerts => [...prevAlerts, 'Failed to capture image']);
         return null;
       }
     }
@@ -51,6 +60,25 @@ export default function DetectionPage() {
   };
 
   const sendToBackend = async (photo) => {
+    setIsScanning(true); // Ensure scanning indicator is on when sending to backend
+    setAlerts([]); // Clear previous alerts
+    setHealthMetrics({ // Reset metrics to N/A while scanning
+      heartRate: 'N/A',
+      respiratoryRate: 'N/A',
+      stressLevel: 'N/A',
+      emotion: 'N/A',
+      fatigue: 'N/A',
+      facialAsymmetry: 'N/A',
+      tremor: 'N/A',
+      eyeMovement: 'N/A',
+      skinAnalysis: 'N/A',
+      skinColor: 'N/A',
+      hydrationStatus: 'N/A',
+      overallHealthScore: 'N/A',
+      healthStatus: 'N/A',
+      recommendations: [],
+    });
+
     try {
       console.log('Using backend URL:', BACKEND_URL); // Debug log
       
@@ -65,30 +93,52 @@ export default function DetectionPage() {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
-        timeout: 10000, // 10 second timeout
+        timeout: 15000, // Increased timeout to 15 seconds for analysis
       });
 
-      setHealthMetrics(response.data);
-      setAlerts([...alerts, 'Analysis completed successfully']);
+      console.log('Backend response:', response.data);
+
+      // Update state with all received metrics and metadata
+      setHealthMetrics({
+        heartRate: response.data.heartRate || 'N/A',
+        respiratoryRate: response.data.respiratoryRate || 'N/A',
+        stressLevel: response.data.stressLevel || 'N/A',
+        emotion: response.data.emotion || 'N/A',
+        fatigue: response.data.fatigue || 'N/A',
+        facialAsymmetry: response.data.facialAsymmetry || 'N/A',
+        tremor: response.data.tremor || 'N/A',
+        eyeMovement: response.data.eyeMovement || 'N/A',
+        skinAnalysis: response.data.skinAnalysis || 'N/A',
+        skinColor: response.data.skinColor || 'N/A',
+        hydrationStatus: response.data.hydrationStatus || 'N/A',
+        overallHealthScore: response.data.overallHealthScore || 'N/A',
+        healthStatus: response.data.healthStatus || 'N/A',
+        recommendations: response.data.recommendations || [],
+      });
+      setAlerts(response.data.alerts || []);
+      setAnalysisQuality(response.data.analysis_quality || 'N/A');
+      setAnalysisTimestamp(response.data.analysis_timestamp || 'N/A');
+
     } catch (error) {
       console.error('Error sending image to backend:', error);
       console.error('Backend URL being used:', BACKEND_URL);
       
       let errorMessage = 'Failed to analyze image';
       if (error.code === 'ECONNABORTED') {
-        errorMessage = 'Request timeout - check your network connection';
+        errorMessage = 'Request timeout - check network or increase timeout';
       } else if (error.response) {
-        errorMessage = `Server error: ${error.response.status}`;
+        errorMessage = `Server error (${error.response.status}): ${error.response.data.detail || error.response.data.error || 'Unknown error'}`;
       } else if (error.request) {
-        errorMessage = 'Network error - unable to reach server';
+        errorMessage = 'Network error - unable to reach server. Is backend running?';
       }
       
-      setAlerts([...alerts, errorMessage]);
+      setAlerts(prevAlerts => [...prevAlerts, errorMessage]);
+    } finally {
+      setIsScanning(false); // Stop scanning regardless of success or failure
     }
   };
 
   const toggleScanning = async () => {
-    setIsScanning(!isScanning);
     if (!isScanning) {
       // Start scanning
       const photo = await captureImage();
@@ -99,6 +149,7 @@ export default function DetectionPage() {
       }
     } else {
       console.log('Stopping health scan');
+      setIsScanning(false); // Manually stop scanning
     }
   };
 
@@ -106,7 +157,7 @@ export default function DetectionPage() {
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color="#64FFDA" />
-        <Text style={styles.loadingText}>Loading...</Text>
+        <Text style={styles.loadingText}>Loading camera permissions...</Text>
       </View>
     );
   }
@@ -183,15 +234,35 @@ export default function DetectionPage() {
         >
           <Text style={styles.sectionTitle}>Real-Time Metrics</Text>
           <View style={styles.metricsGrid}>
-            {Object.entries(healthMetrics).map(([key, value]) => (
+            {Object.entries(healthMetrics).filter(([key]) => key !== 'recommendations').map(([key, value]) => (
               <View key={key} style={styles.metricItem}>
                 <Text style={styles.metricLabel}>
                   {key.replace(/([A-Z])/g, ' $1').trim()}:
                 </Text>
-                <Text style={styles.metricValue}>{value}</Text>
+                <Text style={styles.metricValue}>
+                  {Array.isArray(value) ? value.join(', ') : value}
+                </Text>
               </View>
             ))}
           </View>
+          
+          {healthMetrics.recommendations.length > 0 && (
+            <>
+              <Text style={styles.sectionTitle}>Recommendations</Text>
+              <View style={styles.alertsContainer}>
+                {healthMetrics.recommendations.map((rec, index) => (
+                  <Animated.View 
+                    key={`rec-${index}`} 
+                    style={styles.alertMessage} // Reusing alertMessage style for consistency
+                    entering={FadeIn.delay(index * 100)}
+                  >
+                    <Ionicons name="bulb-outline" size={16} color="#64FFDA" />
+                    <Text style={styles.alertText}>{rec}</Text>
+                  </Animated.View>
+                ))}
+              </View>
+            </>
+          )}
 
           {alerts.length > 0 && (
             <>
@@ -199,7 +270,7 @@ export default function DetectionPage() {
               <View style={styles.alertsContainer}>
                 {alerts.map((alert, index) => (
                   <Animated.View 
-                    key={index} 
+                    key={`alert-${index}`} 
                     style={styles.alertMessage} 
                     entering={FadeIn.delay(index * 100)}
                   >
