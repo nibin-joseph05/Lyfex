@@ -7,12 +7,12 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 
-const { width, height } = Dimensions.get('window');
+const { width } = Dimensions.get('window');
 const CAMERA_ASPECT_RATIO = 4 / 3;
 const CAMERA_WIDTH = width - 32;
 const CAMERA_HEIGHT = CAMERA_WIDTH * CAMERA_ASPECT_RATIO;
-const BACKEND_FRAME_WIDTH = 640;
-const BACKEND_FRAME_HEIGHT = 480;
+const BACKEND_FRAME_WIDTH = 1920;
+const BACKEND_FRAME_HEIGHT = 1080;
 const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || 'http://192.168.220.6:8000';
 const WEBSOCKET_URL = BACKEND_URL.replace('http', 'ws') + '/ws/analyze_stream';
 const FRAME_PROCESSING_INTERVAL_MS = 500;
@@ -34,9 +34,23 @@ export default function DetectionPage() {
   const [analysisTimestamp, setAnalysisTimestamp] = useState('N/A');
   const [errorMessage, setErrorMessage] = useState(null);
   const [wsStatus, setWsStatus] = useState('Disconnected');
+  const [cameraFeedSize, setCameraFeedSize] = useState({ width: CAMERA_WIDTH, height: CAMERA_HEIGHT });
   const cameraRef = useRef(null);
   const ws = useRef(null);
   const router = useRouter();
+
+  // Get actual camera feed size
+  const onCameraReady = useCallback(() => {
+    console.log('Camera is ready');
+    setIsCameraReady(true);
+    setErrorMessage(null);
+    // Estimate actual camera feed size
+    if (cameraRef.current) {
+      // Note: expo-camera doesn't provide direct access to feed size, so we rely on container
+      // For better accuracy, use device-specific camera feed size if available
+      setCameraFeedSize({ width: CAMERA_WIDTH, height: CAMERA_HEIGHT });
+    }
+  }, []);
 
   useEffect(() => {
     if (!isStreaming) {
@@ -92,7 +106,7 @@ export default function DetectionPage() {
           emotion: receivedData.emotion || 'N/A',
           fatigue: receivedData.fatigue || 'N/A',
           facialAsymmetry: receivedData.facialAsymmetry || 'N/A',
-          tremor: receivedData.tremor || 'N/A',
+          treadmill: receivedData.tremor || 'N/A',
           eyeMovement: receivedData.eyeMovement || 'N/A',
           skinAnalysis: receivedData.skinAnalysis || 'N/A',
           skinColor: receivedData.skinColor || 'N/A',
@@ -105,6 +119,9 @@ export default function DetectionPage() {
         setAnalysisQuality(receivedData.analysis_quality || 'N/A');
         setAnalysisTimestamp(receivedData.analysis_timestamp || 'N/A');
         setFaceData(receivedData.face_data || null);
+        if (receivedData.face_data && receivedData.face_data.bounding_box) {
+          console.log('Bounding box received:', receivedData.face_data.bounding_box);
+        }
       } catch (e) {
         console.error('Error parsing WebSocket message:', e.message);
         setAlerts(prevAlerts => [...prevAlerts, 'Error receiving data']);
@@ -141,12 +158,6 @@ export default function DetectionPage() {
       }
     };
   }, [isStreaming]);
-
-  const onCameraReady = () => {
-    console.log('Camera is ready');
-    setIsCameraReady(true);
-    setErrorMessage(null);
-  };
 
   const toggleStreaming = async () => {
     if (!permission.granted) {
@@ -203,6 +214,10 @@ export default function DetectionPage() {
     );
   }
 
+  // Calculate scaling factors
+  const scaleX = cameraFeedSize.width / BACKEND_FRAME_WIDTH;
+  const scaleY = cameraFeedSize.height / BACKEND_FRAME_HEIGHT;
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <LinearGradient
@@ -230,7 +245,13 @@ export default function DetectionPage() {
               setErrorMessage('Failed to initialize camera');
             }}
           />
-          <FrameCaptureInterval cameraRef={cameraRef} ws={ws} interval={FRAME_PROCESSING_INTERVAL_MS} isStreaming={isStreaming} />
+          <FrameCaptureInterval
+            cameraRef={cameraRef}
+            ws={ws}
+            interval={FRAME_PROCESSING_INTERVAL_MS}
+            isStreaming={isStreaming}
+            setErrorMessage={setErrorMessage}
+          />
           <View style={styles.cameraOverlay}>
             {!isCameraReady ? (
               <>
@@ -251,10 +272,10 @@ export default function DetectionPage() {
                 {faceData && faceData.bounding_box && (
                   <View
                     style={[styles.faceBox, {
-                      left: (faceData.bounding_box.x / BACKEND_FRAME_WIDTH) * CAMERA_WIDTH,
-                      top: (faceData.bounding_box.y / BACKEND_FRAME_HEIGHT) * CAMERA_HEIGHT,
-                      width: (faceData.bounding_box.width / BACKEND_FRAME_WIDTH) * CAMERA_WIDTH,
-                      height: (faceData.bounding_box.height / BACKEND_FRAME_HEIGHT) * CAMERA_HEIGHT,
+                      left: faceData.bounding_box.x * scaleX,
+                      top: faceData.bounding_box.y * scaleY,
+                      width: faceData.bounding_box.width * scaleX,
+                      height: faceData.bounding_box.height * scaleY,
                     }]}
                   />
                 )}
@@ -263,8 +284,8 @@ export default function DetectionPage() {
                     <View
                       key={`landmark-${index}`}
                       style={[styles.landmarkPoint, {
-                        left: (point[0] / BACKEND_FRAME_WIDTH) * CAMERA_WIDTH - 2,
-                        top: (point[1] / BACKEND_FRAME_HEIGHT) * CAMERA_HEIGHT - 2,
+                        left: point[0] * scaleX - 2,
+                        top: point[1] * scaleY - 2,
                       }]}
                     />
                   ))
@@ -358,16 +379,20 @@ export default function DetectionPage() {
   );
 }
 
-const FrameCaptureInterval = ({ cameraRef, ws, interval, isStreaming }) => {
+const FrameCaptureInterval = ({ cameraRef, ws, interval, isStreaming, setErrorMessage }) => {
   const [isWsReady, setIsWsReady] = useState(false);
+  const shouldCapture = useRef(true);
 
   useEffect(() => {
     if (!isStreaming) {
       setIsWsReady(false);
+      shouldCapture.current = false;
+      console.log('Streaming stopped, disabling frame capture');
       return;
     }
 
-    // Wait for WebSocket to be ready
+    shouldCapture.current = true;
+    console.log('Starting WebSocket readiness check');
     const checkWsReady = setInterval(() => {
       if (ws.current && ws.current.readyState === WebSocket.OPEN) {
         setIsWsReady(true);
@@ -382,27 +407,23 @@ const FrameCaptureInterval = ({ cameraRef, ws, interval, isStreaming }) => {
     if (cameraRef.current && isWsReady && isStreaming) {
       console.log('Starting frame capture interval');
       intervalId = setInterval(async () => {
+        if (!shouldCapture.current || !ws.current || ws.current.readyState !== WebSocket.OPEN) {
+          console.warn('Cannot capture frame: streaming stopped or WebSocket not open');
+          setErrorMessage('WebSocket not connected or streaming stopped');
+          return;
+        }
         try {
           console.log('Attempting to capture frame');
-          if (!cameraRef.current) {
-            console.warn('Camera ref is null, skipping capture');
-            return;
-          }
           const photo = await cameraRef.current.takePictureAsync({
             base64: true,
-            quality: 0.3, // Reduced quality for faster transfer
-            skipProcessing: true, // Skip processing for faster capture
+            quality: 0.3,
+            skipProcessing: true,
+            mirror: true, // Ensure front-facing camera feed is mirrored to match backend
           });
           if (photo && photo.base64) {
             console.log('Frame captured, base64 length:', photo.base64.length);
-            if (ws.current && ws.current.readyState === WebSocket.OPEN) {
-              const payload = { image: photo.base64 };
-              ws.current.send(JSON.stringify(payload));
-              console.log('Frame sent to WebSocket at:', new Date().toISOString());
-            } else {
-              console.warn('WebSocket not open, skipping frame send:', ws.current ? ws.current.readyState : 'No WebSocket');
-              setErrorMessage('WebSocket connection lost');
-            }
+            ws.current.send(JSON.stringify({ image: photo.base64 }));
+            console.log('Frame sent to WebSocket at:', new Date().toISOString());
           } else {
             console.warn('No base64 data in captured photo:', photo);
             setErrorMessage('Failed to capture frame data');
@@ -412,26 +433,22 @@ const FrameCaptureInterval = ({ cameraRef, ws, interval, isStreaming }) => {
           setErrorMessage(`Frame capture failed: ${error.message}`);
         }
       }, interval);
-    } else {
-      console.warn('Frame capture not started:', {
-        cameraReady: !!cameraRef.current,
-        wsReady: isWsReady,
-        isStreaming,
-      });
     }
 
     return () => {
       console.log('Cleaning up frame capture interval');
+      shouldCapture.current = false;
       if (intervalId) {
         clearInterval(intervalId);
       }
       clearInterval(checkWsReady);
     };
-  }, [cameraRef, ws, interval, isWsReady, isStreaming]);
+  }, [cameraRef, ws, interval, isWsReady, isStreaming, setErrorMessage]);
 
   return null;
 };
 
+// Styles (unchanged except for cameraOverlay to ensure proper alignment)
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
@@ -469,6 +486,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#000',
     alignSelf: 'center',
     marginVertical: 8,
+    overflow: 'hidden', // Prevent overflow of camera feed
   },
   camera: {
     width: '100%',

@@ -50,28 +50,19 @@ class FaceDetector:
         return faces
     
     def detect_landmarks(self, frame: np.ndarray, face_rect) -> Optional[np.ndarray]:
-        """Detect 68 facial landmarks for a detected face"""
         if not self.landmarks_available:
             return None
-        
         try:
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            
-            # Convert OpenCV rectangle to dlib rectangle if needed
-            if isinstance(face_rect, tuple) or isinstance(face_rect, list):
+            if isinstance(face_rect, (tuple, list)):
                 x, y, w, h = face_rect
-                dlib_rect = dlib.rectangle(x, y, x + w, y + h)
+                dlib_rect = dlib.rectangle(left=x, top=y, right=x+w, bottom=y+h) 
             else:
                 dlib_rect = face_rect
-            
-            # Get landmarks
             landmarks = self.landmark_predictor(gray, dlib_rect)
-            
-            # Convert to numpy array
             landmarks_np = np.array([[p.x, p.y] for p in landmarks.parts()])
-            
-            return landmarks_np
-            
+            return landmarksros
+
         except Exception as e:
             logger.error(f"Landmark detection failed: {e}")
             return None
