@@ -1,156 +1,179 @@
-import React, { useState, useRef } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Dimensions, ActivityIndicator, ScrollView } from 'react-native';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, Dimensions, ActivityIndicator, ScrollView, Platform } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
-import axios from 'axios';
 
 const { width, height } = Dimensions.get('window');
-
-// Use only EXPO_PUBLIC_ environment variables (works with app.json)
+const CAMERA_ASPECT_RATIO = 4 / 3;
+const CAMERA_WIDTH = width - 32;
+const CAMERA_HEIGHT = CAMERA_WIDTH * CAMERA_ASPECT_RATIO;
+const BACKEND_FRAME_WIDTH = 640;
+const BACKEND_FRAME_HEIGHT = 480;
 const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || 'http://192.168.220.6:8000';
+const WEBSOCKET_URL = BACKEND_URL.replace('http', 'ws') + '/ws/analyze_stream';
+const FRAME_PROCESSING_INTERVAL_MS = 500;
+const KEEP_ALIVE_INTERVAL_MS = 10000;
 
 export default function DetectionPage() {
   const [permission, requestPermission] = useCameraPermissions();
   const [isCameraReady, setIsCameraReady] = useState(false);
-  const [isScanning, setIsScanning] = useState(false);
-  const cameraRef = useRef(null);
-  const router = useRouter();
-
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [faceData, setFaceData] = useState(null);
   const [healthMetrics, setHealthMetrics] = useState({
-    heartRate: 'N/A',
-    respiratoryRate: 'N/A',
-    stressLevel: 'N/A',
-    emotion: 'N/A',
-    fatigue: 'N/A',
-    facialAsymmetry: 'N/A',
-    tremor: 'N/A',
-    eyeMovement: 'N/A',
-    skinAnalysis: 'N/A',
-    skinColor: 'N/A',
-    hydrationStatus: 'N/A',
-    overallHealthScore: 'N/A',
-    healthStatus: 'N/A',
-    recommendations: [], // Changed to array for recommendations
+    heartRate: 'N/A', respiratoryRate: 'N/A', stressLevel: 'N/A', emotion: 'N/A',
+    fatigue: 'N/A', facialAsymmetry: 'N/A', tremor: 'N/A', eyeMovement: 'N/A',
+    skinAnalysis: 'N/A', skinColor: 'N/A', hydrationStatus: 'N/A',
+    overallHealthScore: 'N/A', healthStatus: 'N/A', recommendations: [],
   });
   const [alerts, setAlerts] = useState([]);
   const [analysisQuality, setAnalysisQuality] = useState('N/A');
   const [analysisTimestamp, setAnalysisTimestamp] = useState('N/A');
+  const [errorMessage, setErrorMessage] = useState(null);
+  const [wsStatus, setWsStatus] = useState('Disconnected');
+  const cameraRef = useRef(null);
+  const ws = useRef(null);
+  const router = useRouter();
 
+  useEffect(() => {
+    if (!isStreaming) {
+      console.log('Streaming stopped, cleaning up WebSocket');
+      if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+        ws.current.close(1000, 'Streaming stopped');
+      }
+      setWsStatus('Disconnected');
+      return;
+    }
+
+    console.log('Starting WebSocket connection:', WEBSOCKET_URL);
+    ws.current = new WebSocket(WEBSOCKET_URL);
+    setWsStatus('Connecting');
+
+    ws.current.onopen = () => {
+      console.log('WebSocket connection opened');
+      setWsStatus('Connected');
+      setAlerts(prevAlerts => [...prevAlerts, 'Live analysis started']);
+      setErrorMessage(null);
+      const keepAlive = setInterval(() => {
+        if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+          ws.current.send(JSON.stringify({ type: 'ping' }));
+          console.log('Sent keep-alive ping');
+        }
+      }, KEEP_ALIVE_INTERVAL_MS);
+      ws.current.keepAlive = keepAlive;
+    };
+
+    ws.current.onmessage = (event) => {
+      try {
+        console.log('Raw WebSocket message:', event.data);
+        const receivedData = JSON.parse(event.data);
+        console.log('Received from backend:', JSON.stringify(receivedData, null, 2));
+
+        if (receivedData.type === 'pong') {
+          console.log('Received keep-alive pong');
+          return;
+        }
+
+        if (receivedData.error) {
+          console.warn('Backend error:', receivedData.error);
+          setAlerts(prevAlerts => [...prevAlerts, receivedData.error]);
+          setErrorMessage(receivedData.error);
+          return;
+        }
+
+        setHealthMetrics(prevMetrics => ({
+          ...prevMetrics,
+          heartRate: receivedData.heartRate || 'N/A',
+          respiratoryRate: receivedData.respiratoryRate || 'N/A',
+          stressLevel: receivedData.stressLevel || 'N/A',
+          emotion: receivedData.emotion || 'N/A',
+          fatigue: receivedData.fatigue || 'N/A',
+          facialAsymmetry: receivedData.facialAsymmetry || 'N/A',
+          tremor: receivedData.tremor || 'N/A',
+          eyeMovement: receivedData.eyeMovement || 'N/A',
+          skinAnalysis: receivedData.skinAnalysis || 'N/A',
+          skinColor: receivedData.skinColor || 'N/A',
+          hydrationStatus: receivedData.hydrationStatus || 'N/A',
+          overallHealthScore: receivedData.overallHealthScore || 'N/A',
+          healthStatus: receivedData.healthStatus || 'N/A',
+          recommendations: receivedData.recommendations || [],
+        }));
+        setAlerts(receivedData.alerts || []);
+        setAnalysisQuality(receivedData.analysis_quality || 'N/A');
+        setAnalysisTimestamp(receivedData.analysis_timestamp || 'N/A');
+        setFaceData(receivedData.face_data || null);
+      } catch (e) {
+        console.error('Error parsing WebSocket message:', e.message);
+        setAlerts(prevAlerts => [...prevAlerts, 'Error receiving data']);
+        setErrorMessage('Failed to process backend data');
+      }
+    };
+
+    ws.current.onerror = (e) => {
+      console.error('WebSocket error:', e);
+      setWsStatus('Error');
+      setAlerts(prevAlerts => [...prevAlerts, `WebSocket error: ${e.message || 'Unknown'}`]);
+      setErrorMessage('WebSocket connection failed');
+      setIsStreaming(false);
+    };
+
+    ws.current.onclose = (event) => {
+      console.log('WebSocket connection closed:', event.code, event.reason);
+      setWsStatus('Disconnected');
+      setAlerts(prevAlerts => [...prevAlerts, `Live analysis stopped: ${event.reason || 'Unknown'}`]);
+      setErrorMessage(`Analysis stopped: ${event.reason || 'Connection closed'}`);
+      setIsStreaming(false);
+      if (ws.current && ws.current.keepAlive) {
+        clearInterval(ws.current.keepAlive);
+      }
+    };
+
+    return () => {
+      if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+        console.log('Closing WebSocket on cleanup');
+        ws.current.close(1000, 'Component unmount');
+      }
+      if (ws.current && ws.current.keepAlive) {
+        clearInterval(ws.current.keepAlive);
+      }
+    };
+  }, [isStreaming]);
 
   const onCameraReady = () => {
+    console.log('Camera is ready');
     setIsCameraReady(true);
+    setErrorMessage(null);
   };
 
-  const captureImage = async () => {
-    if (cameraRef.current && isCameraReady) {
-      try {
-        const photo = await cameraRef.current.takePictureAsync({ base64: true });
-        return photo;
-      } catch (error) {
-        console.error('Error capturing image:', error);
-        setAlerts(prevAlerts => [...prevAlerts, 'Failed to capture image']);
-        return null;
+  const toggleStreaming = async () => {
+    if (!permission.granted) {
+      console.log('Requesting camera permission');
+      const { granted } = await requestPermission();
+      if (!granted) {
+        console.warn('Camera permission denied');
+        setAlerts(prevAlerts => [...prevAlerts, 'Camera permission denied']);
+        setErrorMessage('Camera permission required');
+        return;
       }
     }
-    return null;
-  };
 
-  const sendToBackend = async (photo) => {
-    setIsScanning(true); // Ensure scanning indicator is on when sending to backend
-    setAlerts([]); // Clear previous alerts
-    setHealthMetrics({ // Reset metrics to N/A while scanning
-      heartRate: 'N/A',
-      respiratoryRate: 'N/A',
-      stressLevel: 'N/A',
-      emotion: 'N/A',
-      fatigue: 'N/A',
-      facialAsymmetry: 'N/A',
-      tremor: 'N/A',
-      eyeMovement: 'N/A',
-      skinAnalysis: 'N/A',
-      skinColor: 'N/A',
-      hydrationStatus: 'N/A',
-      overallHealthScore: 'N/A',
-      healthStatus: 'N/A',
-      recommendations: [],
+    setIsStreaming(prev => {
+      console.log('Toggling streaming state to:', !prev);
+      return !prev;
     });
-
-    try {
-      console.log('Using backend URL:', BACKEND_URL); // Debug log
-      
-      const formData = new FormData();
-      formData.append('file', {
-        uri: photo.uri,
-        name: 'photo.jpg',
-        type: 'image/jpeg',
-      });
-
-      const response = await axios.post(`${BACKEND_URL}/analyze`, formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-        },
-        timeout: 15000, // Increased timeout to 15 seconds for analysis
-      });
-
-      console.log('Backend response:', response.data);
-
-      // Update state with all received metrics and metadata
-      setHealthMetrics({
-        heartRate: response.data.heartRate || 'N/A',
-        respiratoryRate: response.data.respiratoryRate || 'N/A',
-        stressLevel: response.data.stressLevel || 'N/A',
-        emotion: response.data.emotion || 'N/A',
-        fatigue: response.data.fatigue || 'N/A',
-        facialAsymmetry: response.data.facialAsymmetry || 'N/A',
-        tremor: response.data.tremor || 'N/A',
-        eyeMovement: response.data.eyeMovement || 'N/A',
-        skinAnalysis: response.data.skinAnalysis || 'N/A',
-        skinColor: response.data.skinColor || 'N/A',
-        hydrationStatus: response.data.hydrationStatus || 'N/A',
-        overallHealthScore: response.data.overallHealthScore || 'N/A',
-        healthStatus: response.data.healthStatus || 'N/A',
-        recommendations: response.data.recommendations || [],
-      });
-      setAlerts(response.data.alerts || []);
-      setAnalysisQuality(response.data.analysis_quality || 'N/A');
-      setAnalysisTimestamp(response.data.analysis_timestamp || 'N/A');
-
-    } catch (error) {
-      console.error('Error sending image to backend:', error);
-      console.error('Backend URL being used:', BACKEND_URL);
-      
-      let errorMessage = 'Failed to analyze image';
-      if (error.code === 'ECONNABORTED') {
-        errorMessage = 'Request timeout - check network or increase timeout';
-      } else if (error.response) {
-        errorMessage = `Server error (${error.response.status}): ${error.response.data.detail || error.response.data.error || 'Unknown error'}`;
-      } else if (error.request) {
-        errorMessage = 'Network error - unable to reach server. Is backend running?';
-      }
-      
-      setAlerts(prevAlerts => [...prevAlerts, errorMessage]);
-    } finally {
-      setIsScanning(false); // Stop scanning regardless of success or failure
-    }
-  };
-
-  const toggleScanning = async () => {
-    if (!isScanning) {
-      // Start scanning
-      const photo = await captureImage();
-      if (photo) {
-        await sendToBackend(photo);
-      } else {
-        setIsScanning(false); // Stop scanning if image capture fails
-      }
-    } else {
-      console.log('Stopping health scan');
-      setIsScanning(false); // Manually stop scanning
-    }
+    setAlerts([]);
+    setHealthMetrics({
+      heartRate: 'N/A', respiratoryRate: 'N/A', stressLevel: 'N/A', emotion: 'N/A',
+      fatigue: 'N/A', facialAsymmetry: 'N/A', tremor: 'N/A', eyeMovement: 'N/A',
+      skinAnalysis: 'N/A', skinColor: 'N/A', hydrationStatus: 'N/A',
+      overallHealthScore: 'N/A', healthStatus: 'N/A', recommendations: [],
+    });
+    setFaceData(null);
+    setErrorMessage(null);
+    setWsStatus('Disconnected');
   };
 
   if (!permission) {
@@ -170,10 +193,7 @@ export default function DetectionPage() {
         <Text style={styles.errorDescription}>
           This app needs camera access to perform health scans.
         </Text>
-        <TouchableOpacity 
-          style={styles.requestPermissionButton} 
-          onPress={requestPermission}
-        >
+        <TouchableOpacity style={styles.requestPermissionButton} onPress={requestPermission}>
           <Text style={styles.requestPermissionText}>Grant Permission</Text>
         </TouchableOpacity>
         <TouchableOpacity style={styles.goBackButton} onPress={() => router.back()}>
@@ -194,7 +214,9 @@ export default function DetectionPage() {
             <Ionicons name="arrow-back" size={24} color="#E6F1FF" />
           </TouchableOpacity>
           <Text style={styles.headerTitle}>Health Scan</Text>
-          <View style={styles.headerRightPlaceholder} />
+          <View style={styles.headerRightPlaceholder}>
+            <Text style={styles.wsStatusText}>{wsStatus}</Text>
+          </View>
         </View>
 
         <View style={styles.cameraContainer}>
@@ -203,28 +225,77 @@ export default function DetectionPage() {
             style={styles.camera}
             facing="front"
             onCameraReady={onCameraReady}
+            onMountError={(error) => {
+              console.error('Camera Mount Error:', error);
+              setErrorMessage('Failed to initialize camera');
+            }}
+          />
+          <FrameCaptureInterval cameraRef={cameraRef} ws={ws} interval={FRAME_PROCESSING_INTERVAL_MS} isStreaming={isStreaming} />
+          <View style={styles.cameraOverlay}>
+            {!isCameraReady ? (
+              <>
+                <ActivityIndicator size="large" color="#64FFDA" />
+                <Text style={styles.overlayText}>Initializing Camera...</Text>
+              </>
+            ) : (
+              <>
+                <Text style={[styles.overlayText, errorMessage && styles.errorText]}>
+                  {errorMessage || 'Position your face clearly in the frame'}
+                </Text>
+                {isStreaming && (
+                  <View style={styles.scanningIndicator}>
+                    <ActivityIndicator size="small" color="#00D4AA" />
+                    <Text style={styles.scanningText}>Live Scanning...</Text>
+                  </View>
+                )}
+                {faceData && faceData.bounding_box && (
+                  <View
+                    style={[styles.faceBox, {
+                      left: (faceData.bounding_box.x / BACKEND_FRAME_WIDTH) * CAMERA_WIDTH,
+                      top: (faceData.bounding_box.y / BACKEND_FRAME_HEIGHT) * CAMERA_HEIGHT,
+                      width: (faceData.bounding_box.width / BACKEND_FRAME_WIDTH) * CAMERA_WIDTH,
+                      height: (faceData.bounding_box.height / BACKEND_FRAME_HEIGHT) * CAMERA_HEIGHT,
+                    }]}
+                  />
+                )}
+                {faceData && faceData.landmarks && faceData.landmarks.length > 0 && (
+                  faceData.landmarks.map((point, index) => (
+                    <View
+                      key={`landmark-${index}`}
+                      style={[styles.landmarkPoint, {
+                        left: (point[0] / BACKEND_FRAME_WIDTH) * CAMERA_WIDTH - 2,
+                        top: (point[1] / BACKEND_FRAME_HEIGHT) * CAMERA_HEIGHT - 2,
+                      }]}
+                    />
+                  ))
+                )}
+              </>
+            )}
+          </View>
+        </View>
+
+        <View style={styles.controlsContainer}>
+          <TouchableOpacity
+            style={[styles.scanButton, isStreaming && styles.scanButtonActive]}
+            onPress={toggleStreaming}
+            activeOpacity={0.8}
           >
-            <View style={styles.cameraOverlay}>
-              {!isCameraReady ? (
-                <>
-                  <ActivityIndicator size="large" color="#64FFDA" />
-                  <Text style={styles.overlayText}>Initializing Camera...</Text>
-                </>
-              ) : (
-                <>
-                  <Text style={styles.overlayText}>
-                    Position your face clearly in the frame
-                  </Text>
-                  {isScanning && (
-                    <View style={styles.scanningIndicator}>
-                      <ActivityIndicator size="small" color="#00D4AA" />
-                      <Text style={styles.scanningText}>Scanning...</Text>
-                    </View>
-                  )}
-                </>
-              )}
-            </View>
-          </CameraView>
+            <LinearGradient
+              colors={isStreaming ? ['#FF6B6B', '#FF5252'] : ['#00D4AA', '#00B4A0']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 0 }}
+              style={styles.scanButtonGradient}
+            >
+              <Ionicons
+                name={isStreaming ? "stop-circle-outline" : "play-circle-outline"}
+                size={24}
+                color="#fff"
+              />
+              <Text style={styles.scanButtonText}>
+                {isStreaming ? 'Stop Live Scan' : 'Start Live Health Scan'}
+              </Text>
+            </LinearGradient>
+          </TouchableOpacity>
         </View>
 
         <Animated.ScrollView
@@ -240,20 +311,20 @@ export default function DetectionPage() {
                   {key.replace(/([A-Z])/g, ' $1').trim()}:
                 </Text>
                 <Text style={styles.metricValue}>
-                  {Array.isArray(value) ? value.join(', ') : value}
+                  {Array.isArray(value) ? value.join(', ') : String(value)}
                 </Text>
               </View>
             ))}
           </View>
-          
+
           {healthMetrics.recommendations.length > 0 && (
             <>
               <Text style={styles.sectionTitle}>Recommendations</Text>
               <View style={styles.alertsContainer}>
                 {healthMetrics.recommendations.map((rec, index) => (
-                  <Animated.View 
-                    key={`rec-${index}`} 
-                    style={styles.alertMessage} // Reusing alertMessage style for consistency
+                  <Animated.View
+                    key={`rec-${index}`}
+                    style={styles.alertMessage}
                     entering={FadeIn.delay(index * 100)}
                   >
                     <Ionicons name="bulb-outline" size={16} color="#64FFDA" />
@@ -269,9 +340,9 @@ export default function DetectionPage() {
               <Text style={styles.sectionTitle}>Health Alerts</Text>
               <View style={styles.alertsContainer}>
                 {alerts.map((alert, index) => (
-                  <Animated.View 
-                    key={`alert-${index}`} 
-                    style={styles.alertMessage} 
+                  <Animated.View
+                    key={`alert-${index}`}
+                    style={styles.alertMessage}
                     entering={FadeIn.delay(index * 100)}
                   >
                     <Ionicons name="warning-outline" size={16} color="#FFD166" />
@@ -281,33 +352,85 @@ export default function DetectionPage() {
               </View>
             </>
           )}
-
-          <TouchableOpacity
-            style={[styles.scanButton, isScanning && styles.scanButtonActive]}
-            onPress={toggleScanning}
-            activeOpacity={0.8}
-          >
-            <LinearGradient
-              colors={isScanning ? ['#FF6B6B', '#FF5252'] : ['#00D4AA', '#00B4A0']}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 0 }}
-              style={styles.scanButtonGradient}
-            >
-              <Ionicons 
-                name={isScanning ? "stop-circle-outline" : "play-circle-outline"} 
-                size={24} 
-                color="#fff" 
-              />
-              <Text style={styles.scanButtonText}>
-                {isScanning ? 'Stop Scan' : 'Start Health Scan'}
-              </Text>
-            </LinearGradient>
-          </TouchableOpacity>
         </Animated.ScrollView>
       </LinearGradient>
     </SafeAreaView>
   );
 }
+
+const FrameCaptureInterval = ({ cameraRef, ws, interval, isStreaming }) => {
+  const [isWsReady, setIsWsReady] = useState(false);
+
+  useEffect(() => {
+    if (!isStreaming) {
+      setIsWsReady(false);
+      return;
+    }
+
+    // Wait for WebSocket to be ready
+    const checkWsReady = setInterval(() => {
+      if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+        setIsWsReady(true);
+        console.log('WebSocket is ready for frame capture');
+        clearInterval(checkWsReady);
+      } else {
+        console.log('Waiting for WebSocket to be ready:', ws.current ? ws.current.readyState : 'No WebSocket');
+      }
+    }, 100);
+
+    let intervalId;
+    if (cameraRef.current && isWsReady && isStreaming) {
+      console.log('Starting frame capture interval');
+      intervalId = setInterval(async () => {
+        try {
+          console.log('Attempting to capture frame');
+          if (!cameraRef.current) {
+            console.warn('Camera ref is null, skipping capture');
+            return;
+          }
+          const photo = await cameraRef.current.takePictureAsync({
+            base64: true,
+            quality: 0.3, // Reduced quality for faster transfer
+            skipProcessing: true, // Skip processing for faster capture
+          });
+          if (photo && photo.base64) {
+            console.log('Frame captured, base64 length:', photo.base64.length);
+            if (ws.current && ws.current.readyState === WebSocket.OPEN) {
+              const payload = { image: photo.base64 };
+              ws.current.send(JSON.stringify(payload));
+              console.log('Frame sent to WebSocket at:', new Date().toISOString());
+            } else {
+              console.warn('WebSocket not open, skipping frame send:', ws.current ? ws.current.readyState : 'No WebSocket');
+              setErrorMessage('WebSocket connection lost');
+            }
+          } else {
+            console.warn('No base64 data in captured photo:', photo);
+            setErrorMessage('Failed to capture frame data');
+          }
+        } catch (error) {
+          console.error('Frame capture error:', error.message);
+          setErrorMessage(`Frame capture failed: ${error.message}`);
+        }
+      }, interval);
+    } else {
+      console.warn('Frame capture not started:', {
+        cameraReady: !!cameraRef.current,
+        wsReady: isWsReady,
+        isStreaming,
+      });
+    }
+
+    return () => {
+      console.log('Cleaning up frame capture interval');
+      if (intervalId) {
+        clearInterval(intervalId);
+      }
+      clearInterval(checkWsReady);
+    };
+  }, [cameraRef, ws, interval, isWsReady, isStreaming]);
+
+  return null;
+};
 
 const styles = StyleSheet.create({
   safeArea: {
@@ -319,29 +442,33 @@ const styles = StyleSheet.create({
   },
   header: {
     flexDirection: 'row',
-    alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingVertical: 15,
-    borderBottomWidth: 1,
-    borderColor: 'rgba(100, 255, 218, 0.15)',
-    backgroundColor: 'rgba(10, 25, 47, 0.9)',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
   },
   backButton: {
-    padding: 5,
+    padding: 8,
   },
   headerTitle: {
-    fontSize: 22,
-    fontWeight: '700',
+    fontSize: 20,
+    fontWeight: 'bold',
     color: '#E6F1FF',
   },
   headerRightPlaceholder: {
-    width: 24,
+    width: 80,
+    alignItems: 'flex-end',
+  },
+  wsStatusText: {
+    color: '#A3BFFA',
+    fontSize: 12,
   },
   cameraContainer: {
-    width: '100%',
-    aspectRatio: 16 / 9,
+    width: CAMERA_WIDTH,
+    height: CAMERA_HEIGHT,
     backgroundColor: '#000',
+    alignSelf: 'center',
+    marginVertical: 8,
   },
   camera: {
     width: '100%',
@@ -361,107 +488,113 @@ const styles = StyleSheet.create({
   overlayText: {
     color: '#E6F1FF',
     fontSize: 16,
+    fontWeight: '500',
     textAlign: 'center',
     marginBottom: 10,
+  },
+  errorText: {
+    color: '#FF6B6B',
   },
   scanningIndicator: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(0, 212, 170, 0.2)',
-    paddingHorizontal: 15,
-    paddingVertical: 8,
-    borderRadius: 20,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    padding: 8,
+    borderRadius: 8,
   },
   scanningText: {
     color: '#00D4AA',
+    fontSize: 14,
     marginLeft: 8,
-    fontSize: 14,
   },
-  metricsScrollView: {
-    flex: 1,
-    paddingHorizontal: 20,
-    paddingVertical: 20,
+  faceBox: {
+    position: 'absolute',
+    borderWidth: 2,
+    borderColor: '#00FF00',
+    backgroundColor: 'rgba(0, 255, 0, 0.1)',
   },
-  metricsContent: {
-    paddingBottom: 20,
+  landmarkPoint: {
+    position: 'absolute',
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#FF0000',
   },
-  sectionTitle: {
-    fontSize: 20,
-    fontWeight: '600',
-    color: '#64FFDA',
-    marginBottom: 15,
-  },
-  metricsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'space-between',
-    marginBottom: 20,
-  },
-  metricItem: {
-    width: '48%',
-    backgroundColor: 'rgba(17, 34, 64, 0.5)',
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 10,
-    borderWidth: 1,
-    borderColor: 'rgba(100, 255, 218, 0.1)',
-  },
-  metricLabel: {
-    fontSize: 13,
-    color: '#8892B0',
-    marginBottom: 4,
-  },
-  metricValue: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    color: '#E6F1FF',
-  },
-  alertsContainer: {
-    backgroundColor: 'rgba(255, 209, 102, 0.1)',
-    borderRadius: 10,
-    padding: 15,
-    marginBottom: 20,
-    borderWidth: 1,
-    borderColor: '#FFD166',
-  },
-  alertMessage: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  alertText: {
-    marginLeft: 10,
-    color: '#FFD166',
-    fontSize: 14,
-    flexShrink: 1,
+  controlsContainer: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    backgroundColor: 'rgba(10, 25, 47, 0.9)',
   },
   scanButton: {
-    borderRadius: 14,
+    borderRadius: 12,
     overflow: 'hidden',
-    elevation: 8,
-    shadowColor: '#00D4AA',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.4,
-    shadowRadius: 12,
-    alignSelf: 'center',
-    width: '80%',
   },
   scanButtonActive: {
-    shadowColor: '#FF6B6B',
+    opacity: 0.9,
   },
   scanButtonGradient: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 18,
-    paddingHorizontal: 24,
+    padding: 16,
   },
   scanButtonText: {
     color: '#fff',
+    fontSize: 16,
+    fontWeight: 'bold',
+    marginLeft: 8,
+  },
+  metricsScrollView: {
+    flex: 1,
+  },
+  metricsContent: {
+    padding: 16,
+    paddingBottom: 16,
+  },
+  sectionTitle: {
     fontSize: 18,
-    fontWeight: '600',
-    letterSpacing: 0.5,
-    marginLeft: 12,
+    fontWeight: 'bold',
+    color: '#E6F1FF',
+    marginBottom: 12,
+  },
+  metricsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+  },
+  metricItem: {
+    width: '48%',
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 12,
+  },
+  metricLabel: {
+    fontSize: 14,
+    color: '#A3BFFA',
+  },
+  metricValue: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#E6F1FF',
+    marginTop: 4,
+  },
+  alertsContainer: {
+    marginBottom: 16,
+  },
+  alertMessage: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 8,
+  },
+  alertText: {
+    color: '#E6F1FF',
+    fontSize: 14,
+    marginLeft: 8,
+    flex: 1,
   },
   loadingContainer: {
     flex: 1,
@@ -470,56 +603,47 @@ const styles = StyleSheet.create({
     backgroundColor: '#0A192F',
   },
   loadingText: {
-    marginTop: 10,
     color: '#E6F1FF',
     fontSize: 16,
+    marginTop: 12,
   },
   errorContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: '#0A192F',
-    padding: 20,
+    padding: 16,
   },
   errorText: {
     color: '#FF6B6B',
     fontSize: 20,
     fontWeight: 'bold',
-    marginTop: 20,
-    marginBottom: 10,
-    textAlign: 'center',
+    marginTop: 12,
   },
   errorDescription: {
-    color: '#8892B0',
-    fontSize: 14,
+    color: '#A3BFFA',
+    fontSize: 16,
     textAlign: 'center',
-    marginBottom: 20,
+    marginTop: 8,
+    marginBottom: 16,
   },
   requestPermissionButton: {
     backgroundColor: '#00D4AA',
-    borderRadius: 10,
     paddingVertical: 12,
-    paddingHorizontal: 25,
-    marginBottom: 15,
+    paddingHorizontal: 24,
+    borderRadius: 8,
+    marginBottom: 12,
   },
   requestPermissionText: {
     color: '#fff',
     fontSize: 16,
-    fontWeight: '600',
-    textAlign: 'center',
+    fontWeight: 'bold',
   },
   goBackButton: {
-    backgroundColor: 'rgba(100, 255, 218, 0.1)',
-    borderColor: '#64FFDA',
-    borderWidth: 1,
-    borderRadius: 10,
-    paddingVertical: 12,
-    paddingHorizontal: 25,
+    padding: 12,
   },
   goBackText: {
-    color: '#64FFDA',
+    color: '#A3BFFA',
     fontSize: 16,
-    fontWeight: '600',
-    textAlign: 'center',
   },
 });
