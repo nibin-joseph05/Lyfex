@@ -11,6 +11,7 @@ import logging
 import json
 import base64
 import time
+from datetime import datetime
 
 # Import our health detection modules
 from app.detectors.heart_rate_detector import HeartRateDetector
@@ -18,9 +19,9 @@ from app.detectors.respiratory_detector import RespiratoryRateDetector
 from app.detectors.emotion_detector import EmotionDetector
 from app.detectors.stress_detector import StressDetector
 from app.detectors.fatigue_detector import FatigueDetector
-# from app.detectors.neurological_detector import NeurologicalDetector
-# from app.detectors.skin_analyzer import SkinAnalyzer
-# from app.analyzers.health_assessor import HealthAssessor
+from app.detectors.neurological_detector import NeurologicalDetector
+from app.detectors.skin_analyzer import SkinAnalyzer
+from app.analyzers.health_assessor import HealthAssessor
 from app.utils.image_processor import ImageProcessor
 from app.utils.face_detector import FaceDetector
 
@@ -52,9 +53,9 @@ class HealthMonitorSystem:
         self.emotion_detector = EmotionDetector()
         self.stress_detector = StressDetector()
         self.fatigue_detector = FatigueDetector()
-        # self.neurological_detector = NeurologicalDetector()
-        # self.skin_analyzer = SkinAnalyzer()
-        # self.health_assessor = HealthAssessor() # This will be uncommented later
+        self.neurological_detector = NeurologicalDetector()
+        self.skin_analyzer = SkinAnalyzer()
+        self.health_assessor = HealthAssessor()
 
         logger.info("Health Monitor System initialized successfully for HTTP endpoints")
 
@@ -169,45 +170,49 @@ async def analyze_health(file: UploadFile = File(...)):
             health_metrics['fatigue'] = 'Analysis Error'
             health_metrics['alertnessScore'] = 0.0
         
-        # # Neurological Assessment (intentionally commented)
-        # try:
-        #     neuro_data = health_system.neurological_detector.assess_neurological_health(
-        #         face_roi, primary_landmarks
-        #     )
-        #     health_metrics['facialAsymmetry'] = neuro_data['facial_asymmetry']
-        #     health_metrics['tremor'] = neuro_data['tremor_detected']
-        #     health_metrics['eyeMovement'] = neuro_data['eye_movement_analysis']
-        # except Exception as e:
-        #     logger.error(f"Neurological assessment error: {e}")
-        #     health_metrics['facialAsymmetry'] = 'Analysis Error'
-        #     health_metrics['tremor'] = 'N/A'
-        #     health_metrics['eyeMovement'] = 'N/A'
+        # Neurological Assessment
+        try:
+            neuro_data = health_system.neurological_detector.assess_neurological_health(
+                face_roi, primary_landmarks
+            )
+            health_metrics['facialAsymmetry'] = neuro_data['facial_asymmetry']
+            health_metrics['tremor'] = neuro_data['tremor_detected']
+            health_metrics['eyeMovement'] = neuro_data['eye_movement_analysis']
+        except Exception as e:
+            logger.error(f"Neurological assessment error: {e}")
+            health_metrics['facialAsymmetry'] = 'Analysis Error'
+            health_metrics['tremor'] = 'N/A'
+            health_metrics['eyeMovement'] = 'N/A'
         
-        # # Skin Analysis (intentionally commented)
-        # try:
-        #     skin_data = health_system.skin_analyzer.analyze_skin_health(face_roi)
-        #     health_metrics['skinAnalysis'] = skin_data['overall_health']
-        #     health_metrics['skinColor'] = skin_data['color_analysis']
-        #     health_metrics['hydrationStatus'] = skin_data['hydration_estimate']
-        # except Exception as e:
-        #     logger.error(f"Skin analysis error: {e}")
-        #     health_metrics['skinAnalysis'] = 'Analysis Error'
-        #     health_metrics['skinColor'] = 'N/A'
-        #     health_metrics['hydrationStatus'] = 'N/A'
+        # Skin Analysis
+        try:
+            skin_data = health_system.skin_analyzer.analyze_skin_health(face_roi)
+            health_metrics['skinAnalysis'] = skin_data['overall_health']
+            health_metrics['skinColor'] = skin_data['color_analysis']
+            health_metrics['hydrationStatus'] = skin_data['hydration_estimate']
+        except Exception as e:
+            logger.error(f"Skin analysis error: {e}")
+            health_metrics['skinAnalysis'] = 'Analysis Error'
+            health_metrics['skinColor'] = 'N/A'
+            health_metrics['hydrationStatus'] = 'N/A'
         
-        # # Generate overall health assessment (intentionally commented)
-        # try:
-        #     overall_assessment = health_system.health_assessor.calculate_health_score(health_metrics)
-        #     health_metrics['overallHealthScore'] = overall_assessment['score']
-        #     health_metrics['healthStatus'] = overall_assessment['status']
-        #     alerts.extend(overall_assessment['alerts'])
-        # except Exception as e:
-        #     logger.error(f"Health assessment error: {e}")
-        #     health_metrics['overallHealthScore'] = 0.0
-        #     health_metrics['healthStatus'] = 'Assessment Error'
+        # Generate overall health assessment
+        try:
+            overall_assessment = health_system.health_assessor.calculate_health_score(health_metrics)
+            health_metrics['overallHealthScore'] = overall_assessment['score']
+            health_metrics['healthStatus'] = overall_assessment['status']
+            alerts.extend(overall_assessment['alerts'])
+        except Exception as e:
+            logger.error(f"Health assessment error: {e}")
+            health_metrics['overallHealthScore'] = 0.0
+            health_metrics['healthStatus'] = 'Assessment Error'
         
-        # Generate recommendations (Placeholder if HealthAssessor is commented out)
-        recommendations = ["Further analysis needed after all modules are enabled."] if not hasattr(health_system, 'health_assessor') else health_system.health_assessor.generate_recommendations(health_metrics)
+        # Generate recommendations
+        try:
+            recommendations = health_system.health_assessor.generate_recommendations(health_metrics)
+        except Exception as e:
+            logger.error(f"Recommendation generation error: {e}")
+            recommendations = ["Health recommendations unavailable at this time"]
         
         # Prepare response
         response_data = {
@@ -261,11 +266,99 @@ async def quick_health_scan(file: UploadFile = File(...)):
         logger.error(f"Quick scan failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Quick scan failed: {str(e)}")
 
+@app.post("/detailed-report")
+async def generate_detailed_report(file: UploadFile = File(...)):
+    """Generate comprehensive health report"""
+    try:
+        contents = await file.read()
+        image = Image.open(BytesIO(contents))
+        frame = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+        
+        faces, landmarks = health_system.face_detector.detect_face_and_landmarks(frame)
+        
+        if len(faces) == 0:
+            return {"error": "No face detected"}
+        
+        primary_face = faces[0]
+        primary_landmarks = landmarks[0] if landmarks else None
+        processed_frame = health_system.image_processor.preprocess_image(frame)
+        face_roi = health_system.image_processor.extract_face_roi(processed_frame, primary_face)
+        
+        # Collect all health metrics
+        health_metrics = {}
+        
+        # All health analyses (same as /analyze endpoint)
+        try:
+            heart_rate_data = health_system.heart_rate_detector.analyze_single_frame(face_roi, primary_landmarks)
+            health_metrics['heartRate'] = heart_rate_data['heart_rate']
+            health_metrics['heartRateVariability'] = heart_rate_data['hrv_score']
+        except:
+            health_metrics['heartRate'] = 'Analysis Error'
+            health_metrics['heartRateVariability'] = 'N/A'
+        
+        try:
+            respiratory_data = health_system.respiratory_detector.analyze_single_frame(frame, primary_landmarks)
+            health_metrics['respiratoryRate'] = respiratory_data['respiratory_rate']
+            health_metrics['breathingPattern'] = respiratory_data['pattern']
+        except:
+            health_metrics['respiratoryRate'] = 'Analysis Error'
+            health_metrics['breathingPattern'] = 'N/A'
+        
+        try:
+            emotion_data = health_system.emotion_detector.detect_emotion(face_roi)
+            health_metrics['emotion'] = emotion_data['primary_emotion']
+            health_metrics['emotionConfidence'] = emotion_data['confidence']
+        except:
+            health_metrics['emotion'] = 'Detection Error'
+            health_metrics['emotionConfidence'] = 0.0
+        
+        try:
+            stress_data = health_system.stress_detector.analyze_stress_indicators(face_roi, primary_landmarks, health_metrics)
+            health_metrics['stressLevel'] = stress_data['stress_level']
+            health_metrics['stressFactors'] = stress_data['factors']
+        except:
+            health_metrics['stressLevel'] = 'Analysis Error'
+            health_metrics['stressFactors'] = []
+        
+        try:
+            fatigue_data = health_system.fatigue_detector.assess_fatigue(face_roi, primary_landmarks)
+            health_metrics['fatigue'] = fatigue_data['fatigue_level']
+            health_metrics['alertnessScore'] = fatigue_data['alertness_score']
+        except:
+            health_metrics['fatigue'] = 'Analysis Error'
+            health_metrics['alertnessScore'] = 0.0
+        
+        try:
+            neuro_data = health_system.neurological_detector.assess_neurological_health(face_roi, primary_landmarks)
+            health_metrics['facialAsymmetry'] = neuro_data['facial_asymmetry']
+            health_metrics['tremor'] = neuro_data['tremor_detected']
+            health_metrics['eyeMovement'] = neuro_data['eye_movement_analysis']
+        except:
+            health_metrics['facialAsymmetry'] = 'Analysis Error'
+            health_metrics['tremor'] = 'N/A'
+            health_metrics['eyeMovement'] = 'N/A'
+        
+        try:
+            skin_data = health_system.skin_analyzer.analyze_skin_health(face_roi)
+            health_metrics['skinAnalysis'] = skin_data['overall_health']
+            health_metrics['skinColor'] = skin_data['color_analysis']
+            health_metrics['hydrationStatus'] = skin_data['hydration_estimate']
+        except:
+            health_metrics['skinAnalysis'] = 'Analysis Error'
+            health_metrics['skinColor'] = 'N/A'
+            health_metrics['hydrationStatus'] = 'N/A'
+        
+        # Generate detailed report
+        detailed_report = health_system.health_assessor.get_detailed_health_report(health_metrics)
+        
+        return detailed_report
+        
+    except Exception as e:
+        logger.error(f"Detailed report generation failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Report generation failed: {str(e)}")
+
 # --- WebSocket Endpoint for Real-time Analysis ---
 
-# This class will hold stateful detector instances for a single WebSocket session.
-# This is a conceptual representation. The actual HeartRateDetector/RespiratoryRateDetector
-# classes will need internal buffers and logic to accumulate frames over time.
 class StreamHealthMonitorSystem:
     def __init__(self):
         self.face_detector = FaceDetector()
@@ -279,9 +372,9 @@ class StreamHealthMonitorSystem:
         self.emotion_detector = EmotionDetector()
         self.stress_detector = StressDetector()
         self.fatigue_detector = FatigueDetector()
-        # self.neurological_detector = NeurologicalDetector() # Uncomment when implemented
-        # self.skin_analyzer = SkinAnalyzer() # Uncomment when implemented
-        # self.health_assessor = HealthAssessor() # Uncomment when implemented
+        self.neurological_detector = NeurologicalDetector()
+        self.skin_analyzer = SkinAnalyzer()
+        self.health_assessor = HealthAssessor()
         
         logger.info("Stream Health Monitor System initialized for a new WebSocket session")
 
@@ -309,7 +402,6 @@ class StreamHealthMonitorSystem:
         # Cardiovascular Analysis
         try:
             heart_rate_data = self.heart_rate_detector.analyze_single_frame(face_roi, primary_landmarks)
-            # The heart_rate_detector should internally buffer and return a result only when stable
             metrics['heartRate'] = heart_rate_data.get('heart_rate', 'Analyzing...')
             metrics['heartRateVariability'] = heart_rate_data.get('hrv_score', 'N/A')
         except Exception as e:
@@ -357,47 +449,46 @@ class StreamHealthMonitorSystem:
             metrics['fatigue'] = 'Analysis Error'
             metrics['alertnessScore'] = 0.0
         
-        # # Neurological Assessment (intentionally commented)
-        # try:
-        #     neuro_data = self.neurological_detector.assess_neurological_health(face_roi, primary_landmarks)
-        #     metrics['facialAsymmetry'] = neuro_data.get('facial_asymmetry', 'Analysis Error')
-        #     metrics['tremor'] = neuro_data.get('tremor_detected', 'N/A')
-        #     metrics['eyeMovement'] = neuro_data.get('eye_movement_analysis', 'N/A')
-        # except Exception as e:
-        #     logger.error(f"Stream Neurological assessment error: {e}")
-        #     metrics['facialAsymmetry'] = 'Analysis Error'
-        #     metrics['tremor'] = 'N/A'
-        #     metrics['eyeMovement'] = 'N/A'
+        # Neurological Assessment
+        try:
+            neuro_data = self.neurological_detector.assess_neurological_health(face_roi, primary_landmarks)
+            metrics['facialAsymmetry'] = neuro_data.get('facial_asymmetry', 'Analysis Error')
+            metrics['tremor'] = neuro_data.get('tremor_detected', 'N/A')
+            metrics['eyeMovement'] = neuro_data.get('eye_movement_analysis', 'N/A')
+        except Exception as e:
+            logger.error(f"Stream Neurological assessment error: {e}")
+            metrics['facialAsymmetry'] = 'Analysis Error'
+            metrics['tremor'] = 'N/A'
+            metrics['eyeMovement'] = 'N/A'
         
-        # # Skin Analysis (intentionally commented)
-        # try:
-        #     skin_data = self.skin_analyzer.analyze_skin_health(face_roi)
-        #     metrics['skinAnalysis'] = skin_data.get('overall_health', 'Analysis Error')
-        #     metrics['skinColor'] = skin_data.get('color_analysis', 'N/A')
-        #     metrics['hydrationStatus'] = skin_data.get('hydration_estimate', 'N/A')
-        # except Exception as e:
-        #     logger.error(f"Stream Skin analysis error: {e}")
-        #     metrics['skinAnalysis'] = 'Analysis Error'
-        #     metrics['skinColor'] = 'N/A'
-        #     metrics['hydrationStatus'] = 'N/A'
+        # Skin Analysis
+        try:
+            skin_data = self.skin_analyzer.analyze_skin_health(face_roi)
+            metrics['skinAnalysis'] = skin_data.get('overall_health', 'Analysis Error')
+            metrics['skinColor'] = skin_data.get('color_analysis', 'N/A')
+            metrics['hydrationStatus'] = skin_data.get('hydration_estimate', 'N/A')
+        except Exception as e:
+            logger.error(f"Stream Skin analysis error: {e}")
+            metrics['skinAnalysis'] = 'Analysis Error'
+            metrics['skinColor'] = 'N/A'
+            metrics['hydrationStatus'] = 'N/A'
         
-        # # Overall health assessment (intentionally commented)
-        # overall_assessment = {}
-        # if hasattr(self, 'health_assessor'): # Check if assessor is enabled
-        #     try:
-        #         overall_assessment = self.health_assessor.calculate_health_score(metrics)
-        #         metrics['overallHealthScore'] = overall_assessment.get('score', 0.0)
-        #         metrics['healthStatus'] = overall_assessment.get('status', 'Assessment Error')
-        #         alerts.extend(overall_assessment.get('alerts', []))
-        #     except Exception as e:
-        #         logger.error(f"Stream Health assessment error: {e}")
-        #         metrics['overallHealthScore'] = 0.0
-        #         metrics['healthStatus'] = 'Assessment Error'
+        # Overall health assessment
+        try:
+            overall_assessment = self.health_assessor.calculate_health_score(metrics)
+            metrics['overallHealthScore'] = overall_assessment.get('score', 0.0)
+            metrics['healthStatus'] = overall_assessment.get('status', 'Assessment Error')
+            alerts.extend(overall_assessment.get('alerts', []))
+        except Exception as e:
+            logger.error(f"Stream Health assessment error: {e}")
+            metrics['overallHealthScore'] = 0.0
+            metrics['healthStatus'] = 'Assessment Error'
 
-        recommendations = ["Further analysis needed after all modules are enabled."]
-        # if hasattr(self, 'health_assessor'):
-        #     recommendations = self.health_assessor.generate_recommendations(metrics)
-
+        try:
+            recommendations = self.health_assessor.generate_recommendations(metrics)
+        except Exception as e:
+            logger.error(f"Stream recommendation error: {e}")
+            recommendations = ["Health recommendations unavailable"]
 
         return {
             **metrics,
@@ -469,4 +560,3 @@ async def websocket_analyze_stream(websocket: WebSocket):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
