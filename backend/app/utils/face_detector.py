@@ -33,35 +33,56 @@ class FaceDetector:
     
     def detect_faces_opencv(self, frame: np.ndarray) -> List[Tuple[int, int, int, int]]:
         """Detect faces using OpenCV Haar Cascades"""
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = self.face_cascade.detectMultiScale(
-            gray,
-            scaleFactor=1.1,
-            minNeighbors=5,
-            minSize=(30, 30),
-            flags=cv2.CASCADE_SCALE_IMAGE
-        )
-        return faces.tolist()
+        try:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = self.face_cascade.detectMultiScale(
+                gray,
+                scaleFactor=1.1,
+                minNeighbors=5,
+                minSize=(30, 30),
+                flags=cv2.CASCADE_SCALE_IMAGE
+            )
+            # Convert numpy array to list of tuples
+            if len(faces) > 0:
+                return [tuple(face) for face in faces]
+            return []
+        except Exception as e:
+            logger.error(f"OpenCV face detection failed: {e}")
+            return []
     
     def detect_faces_dlib(self, frame: np.ndarray) -> List:
         """Detect faces using dlib"""
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = self.dlib_detector(gray)
-        return faces
-    
-    def detect_landmarks(self, frame: np.ndarray, face_rect) -> Optional[np.ndarray]:
-        if not self.landmarks_available:
-            return None
         try:
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = self.dlib_detector(gray)
+            return faces
+        except Exception as e:
+            logger.error(f"Dlib face detection failed: {e}")
+            return []
+    
+    def detect_landmarks(self, frame: np.ndarray, face_rect) -> Optional[np.ndarray]:
+        """Detect facial landmarks for a given face rectangle"""
+        if not self.landmarks_available:
+            return None
+            
+        try:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            
+            # Convert face_rect to dlib rectangle format
             if isinstance(face_rect, (tuple, list)):
                 x, y, w, h = face_rect
-                dlib_rect = dlib.rectangle(left=x, top=y, right=x+w, bottom=y+h) 
+                dlib_rect = dlib.rectangle(left=int(x), top=int(y), right=int(x+w), bottom=int(y+h))
             else:
+                # Already a dlib rectangle
                 dlib_rect = face_rect
+            
+            # Get landmarks
             landmarks = self.landmark_predictor(gray, dlib_rect)
+            
+            # Convert to numpy array
             landmarks_np = np.array([[p.x, p.y] for p in landmarks.parts()])
-            return landmarks_np  # Fixed typo: was 'landmarksros'
+            
+            return landmarks_np
 
         except Exception as e:
             logger.error(f"Landmark detection failed: {e}")
@@ -75,19 +96,26 @@ class FaceDetector:
         try:
             # Use dlib for better accuracy if available
             if self.landmarks_available:
-                dlib_faces = self.detect_faces_dlib(frame)
-                
-                for face in dlib_faces:
-                    # Convert dlib rectangle to (x, y, w, h) format
-                    x, y = face.left(), face.top()
-                    w, h = face.width(), face.height()
-                    faces.append((x, y, w, h))
+                try:
+                    dlib_faces = self.detect_faces_dlib(frame)
                     
-                    # Get landmarks for this face
-                    face_landmarks = self.detect_landmarks(frame, face)
-                    landmarks.append(face_landmarks)
+                    for face in dlib_faces:
+                        # Convert dlib rectangle to (x, y, w, h) format
+                        x, y = face.left(), face.top()
+                        w, h = face.width(), face.height()
+                        faces.append((x, y, w, h))
+                        
+                        # Get landmarks for this face using the dlib rectangle directly
+                        face_landmarks = self.detect_landmarks(frame, face)
+                        landmarks.append(face_landmarks)
+                except Exception as e:
+                    logger.error(f"Dlib detection failed, falling back to OpenCV: {e}")
+                    # Fallback to OpenCV if dlib fails
+                    opencv_faces = self.detect_faces_opencv(frame)
+                    faces = opencv_faces
+                    landmarks = [None] * len(faces)
             else:
-                # Fallback to OpenCV
+                # Use OpenCV when dlib is not available
                 opencv_faces = self.detect_faces_opencv(frame)
                 faces = opencv_faces
                 landmarks = [None] * len(faces)  # No landmarks available

@@ -10,7 +10,7 @@ import Animated, { FadeIn, FadeInDown, useSharedValue, useAnimatedStyle, withRep
 const { width, height } = Dimensions.get('window');
 const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || 'http://192.168.220.6:8000';
 const WEBSOCKET_URL = BACKEND_URL.replace('http', 'ws') + '/ws/video_stream';
-const VIDEO_STREAM_FPS = 15; // Frames per second for video stream
+const VIDEO_STREAM_FPS = 10; // Reduced FPS for better processing
 const DETECTION_CONFIDENCE_THRESHOLD = 0.7;
 
 export default function RealTimeDetectionPage() {
@@ -60,6 +60,7 @@ export default function RealTimeDetectionPage() {
   const streamInterval = useRef(null);
   const sessionStartTime = useRef(null);
   const analysisData = useRef([]);
+  const reconnectAttempts = useRef(0);
 
   // Animation values
   const scanningOpacity = useSharedValue(0);
@@ -111,6 +112,7 @@ export default function RealTimeDetectionPage() {
       setDetectionActive(true);
       sessionStartTime.current = Date.now();
       analysisData.current = [];
+      reconnectAttempts.current = 0;
       startVideoStream();
     };
 
@@ -157,10 +159,23 @@ export default function RealTimeDetectionPage() {
       setDetectionActive(false);
     };
 
-    ws.current.onclose = () => {
-      console.log('Video stream WebSocket disconnected');
+    ws.current.onclose = (event) => {
+      console.log('Video stream WebSocket disconnected', event.code, event.reason);
       setDetectionActive(false);
       stopVideoStream();
+
+      // Auto-reconnect logic
+      if (isStreaming && reconnectAttempts.current < 3) {
+        reconnectAttempts.current++;
+        console.log(`Attempting to reconnect... (${reconnectAttempts.current}/3)`);
+        setTimeout(() => {
+          if (isStreaming) {
+            // Trigger re-connection by updating the effect dependency
+            setIsStreaming(false);
+            setTimeout(() => setIsStreaming(true), 500);
+          }
+        }, 2000);
+      }
     };
 
     return () => {
@@ -181,12 +196,11 @@ export default function RealTimeDetectionPage() {
       }
 
       try {
-        // Capture frame for video stream
+        // Capture frame for video stream - REMOVED mirror option
         const photo = await cameraRef.current.takePictureAsync({
           base64: true,
-          quality: 0.6, // Higher quality for better detection
-          skipProcessing: true,
-          mirror: true,
+          quality: 0.8, // Increased quality for better face detection
+          skipProcessing: false, // Enable processing for better quality
         });
 
         if (photo && photo.base64) {
@@ -568,6 +582,7 @@ export default function RealTimeDetectionPage() {
             ref={cameraRef}
             style={styles.fullScreenCamera}
             facing="front"
+            mirror={true}
             onCameraReady={() => console.log('Camera ready for video streaming')}
             onMountError={(error) => {
               console.error('Camera Mount Error:', error);
@@ -709,7 +724,7 @@ export default function RealTimeDetectionPage() {
               <Text style={styles.qualityLabel}>Quality: </Text>
               <Text style={[styles.qualityValue, {
                 color: detectionQuality === 'Good' ? '#00FF00' : 
-                       detectionQuality === 'Fair' ? '#FFD93D' : '#FF6B6B'
+                       detectionQuality === 'Acceptable' ? '#FFD93D' : '#FF6B6B'
               }]}>
                 {detectionQuality}
               </Text>
@@ -726,6 +741,22 @@ export default function RealTimeDetectionPage() {
               </Text>
             </View>
           </View>
+
+          {/* Instructions overlay */}
+          {detectionActive && detectionQuality === 'Poor' && (
+            <Animated.View style={styles.instructionsOverlay} entering={FadeIn.duration(500)}>
+              <View style={styles.instructionsContainer}>
+                <Ionicons name="information-circle" size={24} color="#FFD93D" />
+                <Text style={styles.instructionsTitle}>Improve Detection Quality</Text>
+                <Text style={styles.instructionsText}>
+                  • Ensure good lighting{'\n'}
+                  • Keep face centered{'\n'}
+                  • Stay still for better results{'\n'}
+                  • Remove glasses if possible
+                </Text>
+              </View>
+            </Animated.View>
+          )}
         </View>
       </LinearGradient>
     </SafeAreaView>
@@ -963,6 +994,31 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginLeft: 6,
   },
+  instructionsOverlay: {
+    position: 'absolute',
+    bottom: 150,
+    left: 16,
+    right: 16,
+    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    borderRadius: 12,
+    padding: 16,
+  },
+  instructionsContainer: {
+    alignItems: 'center',
+  },
+  instructionsTitle: {
+    color: '#FFD93D',
+    fontSize: 16,
+    fontWeight: 'bold',
+    marginTop: 8,
+    marginBottom: 8,
+  },
+  instructionsText: {
+    color: '#E6F1FF',
+    fontSize: 14,
+    textAlign: 'left',
+    lineHeight: 20,
+  },
   // Results screen styles
   resultsScrollView: {
     flex: 1,
@@ -1141,4 +1197,4 @@ const styles = StyleSheet.create({
     color: '#A3BFFA',
     fontSize: 16,
   },
- });   
+});

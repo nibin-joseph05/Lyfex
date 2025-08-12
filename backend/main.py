@@ -424,25 +424,65 @@ class VideoStreamHealthMonitor:
                     'height': (h / frame.shape[0]) * 100
                 },
                 'landmarks': primary_landmarks.tolist() if primary_landmarks is not None else [],
-                'quality': 'Good'
+                'quality': 'Good'  # Start with Good, will be adjusted based on actual quality
             }
             
             realtime_metrics['face_detected'] = True
 
+            # Assess face detection quality with more lenient criteria
+            quality_metrics = self.face_detector.validate_face_quality(face_roi, primary_landmarks)
+            
+            # More lenient quality assessment
+            quality_score = 0
+            if w > 80 and h > 80:  # Reduced minimum size requirement
+                quality_score += 1
+            if quality_metrics.get('brightness_good', False):
+                quality_score += 1
+            if quality_metrics.get('blur_acceptable', False):
+                quality_score += 1
+            if quality_metrics.get('pose_frontal', True):  # Default to True if no landmarks
+                quality_score += 1
+                
+            # Set quality based on score (more lenient)
+            if quality_score >= 3:
+                face_detection['quality'] = 'Good'
+            elif quality_score >= 2:
+                face_detection['quality'] = 'Acceptable'
+            else:
+                face_detection['quality'] = 'Poor'
+
             # Real-time heart rate analysis
             try:
                 heart_rate_data = self.heart_rate_detector.analyze_single_frame(face_roi, primary_landmarks)
+                confidence = 0.0
+                
                 if isinstance(heart_rate_data.get('heart_rate'), str):
-                    if 'bpm' in heart_rate_data['heart_rate']:
-                        realtime_metrics['heart_rate'] = float(heart_rate_data['heart_rate'].split()[0])
+                    # Parse string format like "75 bpm"
+                    hr_str = heart_rate_data['heart_rate'].lower()
+                    if 'bpm' in hr_str:
+                        try:
+                            hr_value = float(hr_str.split()[0])
+                            if 40 <= hr_value <= 200:  # Reasonable HR range
+                                realtime_metrics['heart_rate'] = hr_value
+                                confidence = 0.8  # High confidence for valid HR
+                        except (ValueError, IndexError):
+                            realtime_metrics['heart_rate'] = None
+                    else:
+                        realtime_metrics['heart_rate'] = None
+                elif isinstance(heart_rate_data.get('heart_rate'), (int, float)):
+                    hr_value = float(heart_rate_data['heart_rate'])
+                    if 40 <= hr_value <= 200:  # Reasonable HR range
+                        realtime_metrics['heart_rate'] = hr_value
+                        confidence = 0.8
                     else:
                         realtime_metrics['heart_rate'] = None
                 else:
-                    realtime_metrics['heart_rate'] = heart_rate_data.get('heart_rate')
+                    realtime_metrics['heart_rate'] = None
                 
                 analysis_data['heart_rate'] = realtime_metrics['heart_rate']
-                analysis_data['confidence'] = heart_rate_data.get('confidence', 0.0)
-                realtime_metrics['confidence'] = max(realtime_metrics['confidence'], heart_rate_data.get('confidence', 0.0))
+                analysis_data['confidence'] = max(confidence, heart_rate_data.get('confidence', 0.0))
+                realtime_metrics['confidence'] = max(realtime_metrics['confidence'], confidence)
+                
             except Exception as e:
                 logger.error(f"Real-time heart rate error: {e}")
                 realtime_metrics['heart_rate'] = None
@@ -450,16 +490,34 @@ class VideoStreamHealthMonitor:
             # Real-time respiratory rate analysis
             try:
                 respiratory_data = self.respiratory_detector.analyze_single_frame(frame, primary_landmarks)
+                confidence = 0.0
+                
                 if isinstance(respiratory_data.get('respiratory_rate'), str):
-                    if 'breaths/min' in respiratory_data['respiratory_rate']:
-                        realtime_metrics['respiratory_rate'] = float(respiratory_data['respiratory_rate'].split()[0])
+                    # Parse string format like "16 breaths/min"
+                    rr_str = respiratory_data['respiratory_rate'].lower()
+                    if 'breaths/min' in rr_str or '/min' in rr_str:
+                        try:
+                            rr_value = float(rr_str.split()[0])
+                            if 8 <= rr_value <= 40:  # Reasonable RR range
+                                realtime_metrics['respiratory_rate'] = rr_value
+                                confidence = 0.7
+                        except (ValueError, IndexError):
+                            realtime_metrics['respiratory_rate'] = None
+                    else:
+                        realtime_metrics['respiratory_rate'] = None
+                elif isinstance(respiratory_data.get('respiratory_rate'), (int, float)):
+                    rr_value = float(respiratory_data['respiratory_rate'])
+                    if 8 <= rr_value <= 40:  # Reasonable RR range
+                        realtime_metrics['respiratory_rate'] = rr_value
+                        confidence = 0.7
                     else:
                         realtime_metrics['respiratory_rate'] = None
                 else:
-                    realtime_metrics['respiratory_rate'] = respiratory_data.get('respiratory_rate')
+                    realtime_metrics['respiratory_rate'] = None
                 
                 analysis_data['respiratory_rate'] = realtime_metrics['respiratory_rate']
-                realtime_metrics['confidence'] = max(realtime_metrics['confidence'], respiratory_data.get('confidence', 0.0))
+                realtime_metrics['confidence'] = max(realtime_metrics['confidence'], confidence)
+                
             except Exception as e:
                 logger.error(f"Real-time respiratory rate error: {e}")
                 realtime_metrics['respiratory_rate'] = None
@@ -467,9 +525,19 @@ class VideoStreamHealthMonitor:
             # Real-time emotion detection
             try:
                 emotion_data = self.emotion_detector.detect_emotion(face_roi)
-                realtime_metrics['emotion'] = emotion_data.get('primary_emotion', 'Unknown')
-                analysis_data['emotion'] = realtime_metrics['emotion']
-                realtime_metrics['confidence'] = max(realtime_metrics['confidence'], emotion_data.get('confidence', 0.0))
+                emotion = emotion_data.get('primary_emotion', 'Unknown')
+                
+                # Filter out invalid emotions
+                valid_emotions = ['Happy', 'Sad', 'Angry', 'Surprised', 'Fear', 'Disgust', 'Neutral']
+                if emotion in valid_emotions:
+                    realtime_metrics['emotion'] = emotion
+                    analysis_data['emotion'] = emotion
+                    confidence = emotion_data.get('confidence', 0.0)
+                    realtime_metrics['confidence'] = max(realtime_metrics['confidence'], confidence)
+                else:
+                    realtime_metrics['emotion'] = 'Unknown'
+                    analysis_data['emotion'] = 'Unknown'
+                    
             except Exception as e:
                 logger.error(f"Real-time emotion detection error: {e}")
                 realtime_metrics['emotion'] = 'Unknown'
@@ -477,21 +545,39 @@ class VideoStreamHealthMonitor:
             # Real-time stress level analysis
             try:
                 stress_data = self.stress_detector.analyze_stress_indicators(face_roi, primary_landmarks, {})
+                
                 if isinstance(stress_data.get('stress_level'), (int, float)):
-                    realtime_metrics['stress_level'] = float(stress_data['stress_level'])
+                    stress_value = float(stress_data['stress_level'])
+                    if 0 <= stress_value <= 10:  # Valid stress range
+                        realtime_metrics['stress_level'] = stress_value
+                        analysis_data['stress_level'] = stress_value
+                        realtime_metrics['confidence'] = max(realtime_metrics['confidence'], 0.6)
                 elif isinstance(stress_data.get('stress_level'), str) and '/' in stress_data.get('stress_level', ''):
-                    realtime_metrics['stress_level'] = float(stress_data['stress_level'].split('/')[0])
+                    try:
+                        stress_value = float(stress_data['stress_level'].split('/')[0])
+                        if 0 <= stress_value <= 10:
+                            realtime_metrics['stress_level'] = stress_value
+                            analysis_data['stress_level'] = stress_value
+                            realtime_metrics['confidence'] = max(realtime_metrics['confidence'], 0.6)
+                    except (ValueError, IndexError):
+                        realtime_metrics['stress_level'] = None
                 else:
                     realtime_metrics['stress_level'] = None
-                
-                analysis_data['stress_level'] = realtime_metrics['stress_level']
+                    
             except Exception as e:
                 logger.error(f"Real-time stress detection error: {e}")
                 realtime_metrics['stress_level'] = None
 
-            # Assess face detection quality
-            quality_metrics = self.face_detector.validate_face_quality(face_roi, primary_landmarks)
-            face_detection['quality'] = quality_metrics['overall_quality']
+            # Ensure minimum confidence based on successful detections
+            successful_detections = sum([
+                1 for metric in [realtime_metrics['heart_rate'], realtime_metrics['respiratory_rate'], 
+                               realtime_metrics['emotion'], realtime_metrics['stress_level']] 
+                if metric is not None
+            ])
+            
+            if successful_detections > 0:
+                base_confidence = min(0.5 + (successful_detections * 0.1), 0.9)
+                realtime_metrics['confidence'] = max(realtime_metrics['confidence'], base_confidence)
 
             return {
                 'realtime_metrics': realtime_metrics,
