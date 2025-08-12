@@ -61,7 +61,7 @@ class FaceDetector:
                 dlib_rect = face_rect
             landmarks = self.landmark_predictor(gray, dlib_rect)
             landmarks_np = np.array([[p.x, p.y] for p in landmarks.parts()])
-            return landmarksros
+            return landmarks_np  # Fixed typo: was 'landmarksros'
 
         except Exception as e:
             logger.error(f"Landmark detection failed: {e}")

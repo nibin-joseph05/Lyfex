@@ -357,9 +357,9 @@ async def generate_detailed_report(file: UploadFile = File(...)):
         logger.error(f"Detailed report generation failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Report generation failed: {str(e)}")
 
-# --- WebSocket Endpoint for Real-time Analysis ---
+# --- WebSocket Endpoint for Real-time Video Stream Analysis ---
 
-class StreamHealthMonitorSystem:
+class VideoStreamHealthMonitor:
     def __init__(self):
         self.face_detector = FaceDetector()
         self.image_processor = ImageProcessor()
@@ -376,185 +376,233 @@ class StreamHealthMonitorSystem:
         self.skin_analyzer = SkinAnalyzer()
         self.health_assessor = HealthAssessor()
         
-        logger.info("Stream Health Monitor System initialized for a new WebSocket session")
+        logger.info("Video Stream Health Monitor initialized for real-time analysis")
 
-    async def process_frame(self, frame):
-        metrics = {}
-        alerts = []
-        face_data = {}
-        
-        faces, landmarks = self.face_detector.detect_face_and_landmarks(frame)
-        
-        if len(faces) == 0:
-            return {"error": "No face detected", "metrics": {}, "alerts": [], "analysis_quality": "No Face"}
-
-        primary_face = faces[0]
-        primary_landmarks = landmarks[0] if landmarks else None
-        processed_frame = self.image_processor.preprocess_image(frame)
-        face_roi = self.image_processor.extract_face_roi(processed_frame, primary_face)
-
-        x, y, w, h = primary_face
-        face_data = {
-            "bounding_box": {"x": x, "y": y, "width": w, "height": h},
-            "landmarks": primary_landmarks.tolist() if primary_landmarks is not None else []
+    async def process_video_frame(self, frame):
+        """Process a single video frame and return real-time metrics and face detection data"""
+        realtime_metrics = {
+            'heart_rate': None,
+            'respiratory_rate': None,
+            'stress_level': None,
+            'emotion': None,
+            'confidence': 0.0,
+            'face_detected': False
         }
-
-        # Cardiovascular Analysis
-        try:
-            heart_rate_data = self.heart_rate_detector.analyze_single_frame(face_roi, primary_landmarks)
-            metrics['heartRate'] = heart_rate_data.get('heart_rate', 'Analyzing...')
-            metrics['heartRateVariability'] = heart_rate_data.get('hrv_score', 'N/A')
-        except Exception as e:
-            logger.error(f"Stream Heart rate detection error: {e}")
-            metrics['heartRate'] = 'Analysis Error'
-            metrics['heartRateVariability'] = 'N/A'
         
-        # Respiratory Analysis
-        try:
-            respiratory_data = self.respiratory_detector.analyze_single_frame(frame, primary_landmarks)
-            metrics['respiratoryRate'] = respiratory_data.get('respiratory_rate', 'Analyzing...')
-            metrics['breathingPattern'] = respiratory_data.get('pattern', 'N/A')
-        except Exception as e:
-            logger.error(f"Stream Respiratory detection error: {e}")
-            metrics['respiratoryRate'] = 'Analysis Error'
-            metrics['breathingPattern'] = 'N/A'
-        
-        # Emotion Analysis
-        try:
-            emotion_data = self.emotion_detector.detect_emotion(face_roi)
-            metrics['emotion'] = emotion_data.get('primary_emotion', 'Detection Error')
-            metrics['emotionConfidence'] = emotion_data.get('confidence', 0.0)
-        except Exception as e:
-            logger.error(f"Stream Emotion detection error: {e}")
-            metrics['emotion'] = 'Detection Error'
-            metrics['emotionConfidence'] = 0.0
-        
-        # Stress Level Analysis
-        try:
-            stress_data = self.stress_detector.analyze_stress_indicators(face_roi, primary_landmarks, metrics)
-            metrics['stressLevel'] = stress_data.get('stress_level', 'Analysis Error')
-            metrics['stressFactors'] = stress_data.get('factors', [])
-        except Exception as e:
-            logger.error(f"Stream Stress detection error: {e}")
-            metrics['stressLevel'] = 'Analysis Error'
-            metrics['stressFactors'] = []
-        
-        # Fatigue Analysis
-        try:
-            fatigue_data = self.fatigue_detector.assess_fatigue(face_roi, primary_landmarks)
-            metrics['fatigue'] = fatigue_data.get('fatigue_level', 'Analysis Error')
-            metrics['alertnessScore'] = fatigue_data.get('alertness_score', 0.0)
-        except Exception as e:
-            logger.error(f"Stream Fatigue detection error: {e}")
-            metrics['fatigue'] = 'Analysis Error'
-            metrics['alertnessScore'] = 0.0
-        
-        # Neurological Assessment
-        try:
-            neuro_data = self.neurological_detector.assess_neurological_health(face_roi, primary_landmarks)
-            metrics['facialAsymmetry'] = neuro_data.get('facial_asymmetry', 'Analysis Error')
-            metrics['tremor'] = neuro_data.get('tremor_detected', 'N/A')
-            metrics['eyeMovement'] = neuro_data.get('eye_movement_analysis', 'N/A')
-        except Exception as e:
-            logger.error(f"Stream Neurological assessment error: {e}")
-            metrics['facialAsymmetry'] = 'Analysis Error'
-            metrics['tremor'] = 'N/A'
-            metrics['eyeMovement'] = 'N/A'
-        
-        # Skin Analysis
-        try:
-            skin_data = self.skin_analyzer.analyze_skin_health(face_roi)
-            metrics['skinAnalysis'] = skin_data.get('overall_health', 'Analysis Error')
-            metrics['skinColor'] = skin_data.get('color_analysis', 'N/A')
-            metrics['hydrationStatus'] = skin_data.get('hydration_estimate', 'N/A')
-        except Exception as e:
-            logger.error(f"Stream Skin analysis error: {e}")
-            metrics['skinAnalysis'] = 'Analysis Error'
-            metrics['skinColor'] = 'N/A'
-            metrics['hydrationStatus'] = 'N/A'
-        
-        # Overall health assessment
-        try:
-            overall_assessment = self.health_assessor.calculate_health_score(metrics)
-            metrics['overallHealthScore'] = overall_assessment.get('score', 0.0)
-            metrics['healthStatus'] = overall_assessment.get('status', 'Assessment Error')
-            alerts.extend(overall_assessment.get('alerts', []))
-        except Exception as e:
-            logger.error(f"Stream Health assessment error: {e}")
-            metrics['overallHealthScore'] = 0.0
-            metrics['healthStatus'] = 'Assessment Error'
-
-        try:
-            recommendations = self.health_assessor.generate_recommendations(metrics)
-        except Exception as e:
-            logger.error(f"Stream recommendation error: {e}")
-            recommendations = ["Health recommendations unavailable"]
-
-        return {
-            **metrics,
-            'alerts': alerts,
-            'recommendations': recommendations,
-            'analysis_timestamp': self.image_processor.get_current_timestamp(),
-            'face_detected': True,
-            'analysis_quality': 'Good' if len(alerts) == 0 else 'Warning',
-            'face_data': face_data
+        face_detection = {
+            'bounding_box': None,
+            'landmarks': [],
+            'quality': 'Searching...'
         }
+        
+        analysis_data = {}
+        
+        try:
+            faces, landmarks = self.face_detector.detect_face_and_landmarks(frame)
+            
+            if len(faces) == 0:
+                face_detection['quality'] = 'No Face'
+                return {
+                    'realtime_metrics': realtime_metrics,
+                    'face_detection': face_detection,
+                    'analysis_data': analysis_data,
+                    'timestamp': datetime.now().isoformat()
+                }
+
+            primary_face = faces[0]
+            primary_landmarks = landmarks[0] if landmarks else None
+            processed_frame = self.image_processor.preprocess_image(frame)
+            face_roi = self.image_processor.extract_face_roi(processed_frame, primary_face)
+
+            # Update face detection data
+            x, y, w, h = primary_face
+            face_detection = {
+                'bounding_box': {
+                    'x': (x / frame.shape[1]) * 100,  # Convert to percentage
+                    'y': (y / frame.shape[0]) * 100,
+                    'width': (w / frame.shape[1]) * 100,
+                    'height': (h / frame.shape[0]) * 100
+                },
+                'landmarks': primary_landmarks.tolist() if primary_landmarks is not None else [],
+                'quality': 'Good'
+            }
+            
+            realtime_metrics['face_detected'] = True
+
+            # Real-time heart rate analysis
+            try:
+                heart_rate_data = self.heart_rate_detector.analyze_single_frame(face_roi, primary_landmarks)
+                if isinstance(heart_rate_data.get('heart_rate'), str):
+                    if 'bpm' in heart_rate_data['heart_rate']:
+                        realtime_metrics['heart_rate'] = float(heart_rate_data['heart_rate'].split()[0])
+                    else:
+                        realtime_metrics['heart_rate'] = None
+                else:
+                    realtime_metrics['heart_rate'] = heart_rate_data.get('heart_rate')
+                
+                analysis_data['heart_rate'] = realtime_metrics['heart_rate']
+                analysis_data['confidence'] = heart_rate_data.get('confidence', 0.0)
+                realtime_metrics['confidence'] = max(realtime_metrics['confidence'], heart_rate_data.get('confidence', 0.0))
+            except Exception as e:
+                logger.error(f"Real-time heart rate error: {e}")
+                realtime_metrics['heart_rate'] = None
+
+            # Real-time respiratory rate analysis
+            try:
+                respiratory_data = self.respiratory_detector.analyze_single_frame(frame, primary_landmarks)
+                if isinstance(respiratory_data.get('respiratory_rate'), str):
+                    if 'breaths/min' in respiratory_data['respiratory_rate']:
+                        realtime_metrics['respiratory_rate'] = float(respiratory_data['respiratory_rate'].split()[0])
+                    else:
+                        realtime_metrics['respiratory_rate'] = None
+                else:
+                    realtime_metrics['respiratory_rate'] = respiratory_data.get('respiratory_rate')
+                
+                analysis_data['respiratory_rate'] = realtime_metrics['respiratory_rate']
+                realtime_metrics['confidence'] = max(realtime_metrics['confidence'], respiratory_data.get('confidence', 0.0))
+            except Exception as e:
+                logger.error(f"Real-time respiratory rate error: {e}")
+                realtime_metrics['respiratory_rate'] = None
+
+            # Real-time emotion detection
+            try:
+                emotion_data = self.emotion_detector.detect_emotion(face_roi)
+                realtime_metrics['emotion'] = emotion_data.get('primary_emotion', 'Unknown')
+                analysis_data['emotion'] = realtime_metrics['emotion']
+                realtime_metrics['confidence'] = max(realtime_metrics['confidence'], emotion_data.get('confidence', 0.0))
+            except Exception as e:
+                logger.error(f"Real-time emotion detection error: {e}")
+                realtime_metrics['emotion'] = 'Unknown'
+
+            # Real-time stress level analysis
+            try:
+                stress_data = self.stress_detector.analyze_stress_indicators(face_roi, primary_landmarks, {})
+                if isinstance(stress_data.get('stress_level'), (int, float)):
+                    realtime_metrics['stress_level'] = float(stress_data['stress_level'])
+                elif isinstance(stress_data.get('stress_level'), str) and '/' in stress_data.get('stress_level', ''):
+                    realtime_metrics['stress_level'] = float(stress_data['stress_level'].split('/')[0])
+                else:
+                    realtime_metrics['stress_level'] = None
+                
+                analysis_data['stress_level'] = realtime_metrics['stress_level']
+            except Exception as e:
+                logger.error(f"Real-time stress detection error: {e}")
+                realtime_metrics['stress_level'] = None
+
+            # Assess face detection quality
+            quality_metrics = self.face_detector.validate_face_quality(face_roi, primary_landmarks)
+            face_detection['quality'] = quality_metrics['overall_quality']
+
+            return {
+                'realtime_metrics': realtime_metrics,
+                'face_detection': face_detection,
+                'analysis_data': analysis_data,
+                'timestamp': datetime.now().isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Video frame processing error: {e}")
+            return {
+                'realtime_metrics': realtime_metrics,
+                'face_detection': face_detection,
+                'analysis_data': analysis_data,
+                'error': str(e),
+                'timestamp': datetime.now().isoformat()
+            }
 
 
-@app.websocket("/ws/analyze_stream")
-async def websocket_analyze_stream(websocket: WebSocket):
+@app.websocket("/ws/video_stream")
+async def websocket_video_stream(websocket: WebSocket):
+    """WebSocket endpoint for real-time video stream processing"""
     await websocket.accept()
-    logger.info("WebSocket connection established.")
-    session_health_system = StreamHealthMonitorSystem()
+    logger.info("Video stream WebSocket connection established")
+    
+    # Create a new health monitor instance for this session
+    video_monitor = VideoStreamHealthMonitor()
 
     try:
         while True:
+            # Receive data from client
             data = await websocket.receive_text()
-            logger.info("Received WebSocket message")
+            
             try:
                 payload = json.loads(data)
             except json.JSONDecodeError as e:
                 logger.error(f"Invalid JSON received: {e}")
-                await websocket.send_json({"error": "Invalid JSON format received"})
+                await websocket.send_json({
+                    "error": "Invalid JSON format",
+                    "timestamp": datetime.now().isoformat()
+                })
                 continue
 
+            # Handle ping messages
             if payload.get('type') == 'ping':
                 await websocket.send_json({"type": "pong"})
-                logger.info("Received ping, sent pong")
                 continue
 
-            base64_image = payload.get('image')
-            if not base64_image:
-                logger.warning("Received payload without image data.")
-                await websocket.send_json({"error": "No image data in payload", "timestamp": datetime.now().isoformat()})
-                continue
-
-            try:
-                logger.info("Decoding base64 image")
-                image_bytes = base64.b64decode(base64_image)
-                nparr = np.frombuffer(image_bytes, np.uint8)
-                frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-
-                if frame is None:
-                    logger.warning("Failed to decode image from received data.")
-                    await websocket.send_json({"error": "Invalid image data received", "timestamp": datetime.now().isoformat()})
+            # Process video frame
+            if payload.get('type') == 'video_frame':
+                base64_image = payload.get('image')
+                
+                if not base64_image:
+                    await websocket.send_json({
+                        "error": "No image data provided",
+                        "timestamp": datetime.now().isoformat()
+                    })
                     continue
 
-                logger.info("Processing frame")
-                current_metrics = await session_health_system.process_frame(frame)
-                logger.info(f"Sending metrics: {current_metrics}")
-                await websocket.send_json(current_metrics)
-            except Exception as e:
-                logger.error(f"Frame processing error: {e}")
-                await websocket.send_json({"error": f"Frame processing failed: {str(e)}", "timestamp": datetime.now().isoformat()})
+                try:
+                    # Decode base64 image
+                    image_bytes = base64.b64decode(base64_image)
+                    nparr = np.frombuffer(image_bytes, np.uint8)
+                    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+                    if frame is None:
+                        await websocket.send_json({
+                            "error": "Failed to decode image",
+                            "timestamp": datetime.now().isoformat()
+                        })
+                        continue
+
+                    # Process the video frame
+                    result = await video_monitor.process_video_frame(frame)
+                    
+                    # Send results back to client
+                    await websocket.send_json(result)
+                    
+                except Exception as e:
+                    logger.error(f"Frame processing error: {e}")
+                    await websocket.send_json({
+                        "error": f"Frame processing failed: {str(e)}",
+                        "timestamp": datetime.now().isoformat()
+                    })
 
     except WebSocketDisconnect:
-        logger.info("WebSocket client disconnected gracefully.")
+        logger.info("Video stream WebSocket client disconnected")
     except Exception as e:
-        logger.error(f"WebSocket processing error: {e}")
-        await websocket.send_json({"error": f"Internal server error: {str(e)}", "timestamp": datetime.now().isoformat()})
+        logger.error(f"Video stream WebSocket error: {e}")
+        try:
+            await websocket.send_json({
+                "error": f"Server error: {str(e)}",
+                "timestamp": datetime.now().isoformat()
+            })
+        except:
+            pass
     finally:
-        logger.info("WebSocket session ended.")
+        logger.info("Video stream WebSocket session ended")
+
+
+# Keep the old endpoint for backward compatibility
+@app.websocket("/ws/analyze_stream")
+async def websocket_analyze_stream(websocket: WebSocket):
+    """Legacy WebSocket endpoint - redirects to video_stream"""
+    await websocket.accept()
+    logger.info("Legacy WebSocket connection - redirecting to video_stream endpoint")
+    await websocket.send_json({
+        "message": "Please use /ws/video_stream endpoint for real-time analysis",
+        "timestamp": datetime.now().isoformat()
+    })
+    await websocket.close()
 
 
 if __name__ == "__main__":
