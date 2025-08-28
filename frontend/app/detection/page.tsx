@@ -7,21 +7,58 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import Animated, { FadeIn, FadeInDown, useSharedValue, useAnimatedStyle, withRepeat, withSequence, withTiming } from 'react-native-reanimated';
 
+type FaceBox = { x: number; y: number; width: number; height: number };
+type RealTimePoint = {
+  timestamp: number;
+  heart_rate?: number;
+  respiratory_rate?: number;
+  stress_level?: number;
+  emotion?: string;
+  confidence: number;
+};
+type CurrentMetrics = {
+  heartRate: number | null;
+  respiratoryRate: number | null;
+  stressLevel: number | null;
+  emotion: string | null;
+  confidence: number;
+  faceDetected: boolean;
+};
+type FinalResultsType = {
+  heartRate: string;
+  respiratoryRate: string;
+  stressLevel: string;
+  emotion: string;
+  fatigue: string;
+  facialAsymmetry: string;
+  tremor: string;
+  eyeMovement: string;
+  skinAnalysis: string;
+  skinColor: string;
+  hydrationStatus: string;
+  overallHealthScore: string;
+  healthStatus: string;
+  recommendations: string[];
+  sessionDuration: string;
+  dataPoints: number;
+};
+
 const { width, height } = Dimensions.get('window');
-const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || 'http://192.168.220.6:8000';
+// Prefer env; fallback to backend host observed in ipconfig logs
+const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL || 'http://192.168.220.4:8000';
 const WEBSOCKET_URL = BACKEND_URL.replace('http', 'ws') + '/ws/video_stream';
-const VIDEO_STREAM_FPS = 10; // Reduced FPS for better processing
-const DETECTION_CONFIDENCE_THRESHOLD = 0.7;
+const VIDEO_STREAM_FPS = 6; // Lower FPS to reduce capture failures
+const DETECTION_CONFIDENCE_THRESHOLD = 0.5;
 
 export default function RealTimeDetectionPage() {
   const [permission, requestPermission] = useCameraPermissions();
-  const [isStreaming, setIsStreaming] = useState(false);
-  const [showResults, setShowResults] = useState(false);
-  const [detectionActive, setDetectionActive] = useState(false);
-  const [sessionData, setSessionData] = useState(null);
+  const [isStreaming, setIsStreaming] = useState<boolean>(false);
+  const [showResults, setShowResults] = useState<boolean>(false);
+  const [detectionActive, setDetectionActive] = useState<boolean>(false);
+  const [sessionData, setSessionData] = useState<any>(null);
   
   // Real-time detection states
-  const [currentMetrics, setCurrentMetrics] = useState({
+  const [currentMetrics, setCurrentMetrics] = useState<CurrentMetrics>({
     heartRate: null,
     respiratoryRate: null,
     stressLevel: null,
@@ -31,11 +68,11 @@ export default function RealTimeDetectionPage() {
   });
 
   // Face detection and tracking
-  const [faceBox, setFaceBox] = useState(null);
-  const [landmarks, setLandmarks] = useState([]);
-  const [detectionQuality, setDetectionQuality] = useState('Searching...');
+  const [faceBox, setFaceBox] = useState<FaceBox | null>(null);
+  const [landmarks, setLandmarks] = useState<number[][]>([]);
+  const [detectionQuality, setDetectionQuality] = useState<string>('Searching...');
   
-  const [finalResults, setFinalResults] = useState({
+  const [finalResults, setFinalResults] = useState<FinalResultsType>({
     heartRate: 'N/A', 
     respiratoryRate: 'N/A', 
     stressLevel: 'N/A', 
@@ -54,13 +91,15 @@ export default function RealTimeDetectionPage() {
     dataPoints: 0
   });
 
-  const cameraRef = useRef(null);
-  const ws = useRef(null);
+  const cameraRef = useRef<CameraView | null>(null);
+  const ws = useRef<WebSocket | null>(null);
   const router = useRouter();
-  const streamInterval = useRef(null);
-  const sessionStartTime = useRef(null);
-  const analysisData = useRef([]);
-  const reconnectAttempts = useRef(0);
+  const streamInterval = useRef<ReturnType<typeof setInterval> | null>(null);
+  const sessionStartTime = useRef<number | null>(null);
+  const analysisData = useRef<RealTimePoint[]>([]);
+  const reconnectAttempts = useRef<number>(0);
+  const cameraIsReady = useRef<boolean>(false);
+  const isCapturingFrame = useRef<boolean>(false);
 
   // Animation values
   const scanningOpacity = useSharedValue(0);
@@ -116,7 +155,7 @@ export default function RealTimeDetectionPage() {
       startVideoStream();
     };
 
-    ws.current.onmessage = (event) => {
+    ws.current.onmessage = (event: MessageEvent) => {
       try {
         const data = JSON.parse(event.data);
         console.log('Real-time detection data:', data);
@@ -125,9 +164,9 @@ export default function RealTimeDetectionPage() {
         if (data.realtime_metrics) {
           setCurrentMetrics(prev => ({
             ...prev,
-            heartRate: data.realtime_metrics.heart_rate,
-            respiratoryRate: data.realtime_metrics.respiratory_rate,
-            stressLevel: data.realtime_metrics.stress_level,
+            heartRate: typeof data.realtime_metrics.heart_rate === 'number' ? data.realtime_metrics.heart_rate : null,
+            respiratoryRate: typeof data.realtime_metrics.respiratory_rate === 'number' ? data.realtime_metrics.respiratory_rate : null,
+            stressLevel: typeof data.realtime_metrics.stress_level === 'number' ? data.realtime_metrics.stress_level : null,
             emotion: data.realtime_metrics.emotion,
             confidence: data.realtime_metrics.confidence || 0,
             faceDetected: data.realtime_metrics.face_detected || false
@@ -137,7 +176,7 @@ export default function RealTimeDetectionPage() {
         // Update face detection visualization
         if (data.face_detection) {
           setFaceBox(data.face_detection.bounding_box);
-          setLandmarks(data.face_detection.landmarks || []);
+          setLandmarks(Array.isArray(data.face_detection.landmarks) ? data.face_detection.landmarks : []);
           setDetectionQuality(data.face_detection.quality || 'Good');
         }
 
@@ -154,12 +193,12 @@ export default function RealTimeDetectionPage() {
       }
     };
 
-    ws.current.onerror = (error) => {
+    ws.current.onerror = (error: Event) => {
       console.error('WebSocket error:', error);
       setDetectionActive(false);
     };
 
-    ws.current.onclose = (event) => {
+    ws.current.onclose = (event: CloseEvent) => {
       console.log('Video stream WebSocket disconnected', event.code, event.reason);
       setDetectionActive(false);
       stopVideoStream();
@@ -180,7 +219,10 @@ export default function RealTimeDetectionPage() {
 
     return () => {
       if (ws.current) {
-        ws.current.close();
+        try {
+          ws.current.close();
+        } catch {}
+        ws.current = null;
       }
       stopVideoStream();
     };
@@ -190,17 +232,22 @@ export default function RealTimeDetectionPage() {
     if (!cameraRef.current) return;
 
     streamInterval.current = setInterval(async () => {
+      if (!cameraIsReady.current) return;
       if (!ws.current || ws.current.readyState !== WebSocket.OPEN) {
         console.warn('WebSocket not ready for video streaming');
         return;
       }
+      if (isCapturingFrame.current) return;
+      isCapturingFrame.current = true;
 
       try {
-        // Capture frame for video stream - REMOVED mirror option
-        const photo = await cameraRef.current.takePictureAsync({
+        // Capture frame for video stream: lighter to emulate video
+        const camera = cameraRef.current;
+        if (!camera) return;
+        const photo = await camera.takePictureAsync({
           base64: true,
-          quality: 0.8, // Increased quality for better face detection
-          skipProcessing: false, // Enable processing for better quality
+          quality: 0.6,
+          skipProcessing: false,
         });
 
         if (photo && photo.base64) {
@@ -216,10 +263,14 @@ export default function RealTimeDetectionPage() {
             }
           };
 
-          ws.current.send(JSON.stringify(frameData));
+          try {
+            ws.current.send(JSON.stringify(frameData));
+          } catch {}
         }
       } catch (error) {
         console.error('Error capturing video frame:', error);
+      } finally {
+        isCapturingFrame.current = false;
       }
     }, 1000 / VIDEO_STREAM_FPS);
   }, []);
@@ -232,7 +283,7 @@ export default function RealTimeDetectionPage() {
   }, []);
 
   const handleStartDetection = async () => {
-    if (!permission.granted) {
+    if (!permission || !permission.granted) {
       const { granted } = await requestPermission();
       if (!granted) {
         console.warn('Camera permission denied');
@@ -278,11 +329,14 @@ export default function RealTimeDetectionPage() {
     
     // Close WebSocket connection
     if (ws.current) {
-      ws.current.close(1000, 'Detection stopped by user');
+      try {
+        ws.current.close(1000, 'Detection stopped by user');
+      } catch {}
+      ws.current = null;
     }
   }, []);
 
-  const processAnalysisData = (dataPoints) => {
+  const processAnalysisData = (dataPoints: RealTimePoint[]) => {
     if (dataPoints.length === 0) {
       return {
         heartRate: 'N/A',
@@ -303,7 +357,7 @@ export default function RealTimeDetectionPage() {
     }
 
     // Calculate averages and trends from collected data
-    const validData = dataPoints.filter(d => d.confidence > DETECTION_CONFIDENCE_THRESHOLD);
+    const validData = dataPoints.filter((d: RealTimePoint) => d.confidence > DETECTION_CONFIDENCE_THRESHOLD);
     
     if (validData.length === 0) {
       return {
@@ -325,13 +379,13 @@ export default function RealTimeDetectionPage() {
     }
 
     // Calculate averages
-    const avgHeartRate = Math.round(validData.reduce((sum, d) => sum + (d.heart_rate || 0), 0) / validData.length);
-    const avgRespRate = Math.round(validData.reduce((sum, d) => sum + (d.respiratory_rate || 0), 0) / validData.length);
-    const avgStress = (validData.reduce((sum, d) => sum + (d.stress_level || 0), 0) / validData.length).toFixed(1);
+    const avgHeartRate = Math.round(validData.reduce((sum: number, d: RealTimePoint) => sum + (d.heart_rate || 0), 0) / validData.length);
+    const avgRespRate = Math.round(validData.reduce((sum: number, d: RealTimePoint) => sum + (d.respiratory_rate || 0), 0) / validData.length);
+    const avgStress = (validData.reduce((sum: number, d: RealTimePoint) => sum + (d.stress_level || 0), 0) / validData.length).toFixed(1);
     
     // Most common emotion
-    const emotions = validData.map(d => d.emotion).filter(e => e);
-    const emotionCounts = emotions.reduce((acc, emotion) => {
+    const emotions = validData.map((d: RealTimePoint) => d.emotion).filter((e): e is string => Boolean(e));
+    const emotionCounts = emotions.reduce((acc: Record<string, number>, emotion: string) => {
       acc[emotion] = (acc[emotion] || 0) + 1;
       return acc;
     }, {});
@@ -355,7 +409,7 @@ export default function RealTimeDetectionPage() {
     return {
       heartRate: avgHeartRate > 0 ? `${avgHeartRate} BPM` : 'N/A',
       respiratoryRate: avgRespRate > 0 ? `${avgRespRate} /min` : 'N/A',
-      stressLevel: avgStress > 0 ? `${avgStress}/10` : 'N/A',
+      stressLevel: parseFloat(avgStress) > 0 ? `${avgStress}/10` : 'N/A',
       emotion: dominantEmotion,
       fatigue: 'Analyzing...',
       facialAsymmetry: 'Normal',
@@ -370,7 +424,7 @@ export default function RealTimeDetectionPage() {
     };
   };
 
-  const generateRecommendations = (metrics) => {
+  const generateRecommendations = (metrics: { heartRate: number; stressLevel: number; emotion: string; dataQuality: number; }) => {
     const recommendations = [];
     
     if (metrics.heartRate > 100) {
@@ -398,7 +452,7 @@ export default function RealTimeDetectionPage() {
     return recommendations;
   };
 
-  const calculateHealthScore = (metrics) => {
+  const calculateHealthScore = (metrics: { heartRate: number; stressLevel: number; dataQuality: number; }) => {
     let score = 100;
     
     // Heart rate impact
@@ -415,7 +469,7 @@ export default function RealTimeDetectionPage() {
     return Math.max(0, Math.round(score));
   };
 
-  const getHealthStatus = (score) => {
+  const getHealthStatus = (score: number) => {
     if (score >= 80) return 'Excellent';
     if (score >= 60) return 'Good';
     if (score >= 40) return 'Fair';
@@ -583,7 +637,10 @@ export default function RealTimeDetectionPage() {
             style={styles.fullScreenCamera}
             facing="front"
             mirror={true}
-            onCameraReady={() => console.log('Camera ready for video streaming')}
+            onCameraReady={() => {
+              console.log('Camera ready for video streaming');
+              cameraIsReady.current = true;
+            }}
             onMountError={(error) => {
               console.error('Camera Mount Error:', error);
             }}
@@ -639,7 +696,7 @@ export default function RealTimeDetectionPage() {
                   <Ionicons name="heart" size={16} color="#FF6B6B" />
                   <Text style={styles.liveMetricLabel}>HR:</Text>
                   <Text style={styles.liveMetricValue}>
-                    {currentMetrics.heartRate ? `${Math.round(currentMetrics.heartRate)} BPM` : '--'}
+                    {currentMetrics.heartRate !== null && currentMetrics.heartRate !== undefined ? `${Math.round(currentMetrics.heartRate)} BPM` : '--'}
                   </Text>
                 </View>
                 
@@ -647,7 +704,7 @@ export default function RealTimeDetectionPage() {
                   <Ionicons name="fitness" size={16} color="#4ECDC4" />
                   <Text style={styles.liveMetricLabel}>RR:</Text>
                   <Text style={styles.liveMetricValue}>
-                    {currentMetrics.respiratoryRate ? `${Math.round(currentMetrics.respiratoryRate)}/min` : '--'}
+                    {currentMetrics.respiratoryRate !== null && currentMetrics.respiratoryRate !== undefined ? `${Math.round(currentMetrics.respiratoryRate)}/min` : '--'}
                   </Text>
                 </View>
                 
@@ -655,7 +712,7 @@ export default function RealTimeDetectionPage() {
                   <Ionicons name="analytics" size={16} color="#FFD93D" />
                   <Text style={styles.liveMetricLabel}>Stress:</Text>
                   <Text style={styles.liveMetricValue}>
-                    {currentMetrics.stressLevel ? `${currentMetrics.stressLevel.toFixed(1)}/10` : '--'}
+                    {currentMetrics.stressLevel !== null && currentMetrics.stressLevel !== undefined ? `${currentMetrics.stressLevel.toFixed(1)}/10` : '--'}
                   </Text>
                 </View>
                 

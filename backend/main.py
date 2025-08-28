@@ -1,4 +1,5 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect
+from starlette.websockets import WebSocketState
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
@@ -409,8 +410,14 @@ class VideoStreamHealthMonitor:
                     'timestamp': datetime.now().isoformat()
                 }
 
-            primary_face = faces[0]
-            primary_landmarks = landmarks[0] if landmarks else None
+            # Choose the largest detected face to improve stability
+            largest_idx = 0
+            if len(faces) > 1:
+                areas = [(w * h) for (x, y, w, h) in faces]
+                largest_idx = int(max(range(len(areas)), key=lambda i: areas[i]))
+            primary_face = faces[largest_idx]
+            primary_landmarks = (landmarks[largest_idx]
+                                 if landmarks and len(landmarks) > largest_idx else None)
             processed_frame = self.image_processor.preprocess_image(frame)
             face_roi = self.image_processor.extract_face_roi(processed_frame, primary_face)
 
@@ -423,7 +430,16 @@ class VideoStreamHealthMonitor:
                     'width': (w / frame.shape[1]) * 100,
                     'height': (h / frame.shape[0]) * 100
                 },
-                'landmarks': primary_landmarks.tolist() if primary_landmarks is not None else [],
+                # Convert landmark coordinates to percentage of frame size to match frontend expectations
+                'landmarks': (
+                    [
+                        [
+                            (float(pt[0]) / frame.shape[1]) * 100,
+                            (float(pt[1]) / frame.shape[0]) * 100
+                        ]
+                        for pt in primary_landmarks
+                    ] if primary_landmarks is not None else []
+                ),
                 'quality': 'Good'  # Start with Good, will be adjusted based on actual quality
             }
             
@@ -467,6 +483,20 @@ class VideoStreamHealthMonitor:
                                 confidence = 0.8  # High confidence for valid HR
                         except (ValueError, IndexError):
                             realtime_metrics['heart_rate'] = None
+                    elif 'analyzing' in hr_str:
+                        # Provide a quick estimate to avoid prolonged nulls
+                        try:
+                            quick_estimate = self.heart_rate_detector.quick_heart_rate_estimate(face_roi)
+                            qe = quick_estimate.lower()
+                            if '~' in qe and 'bpm' in qe:
+                                val = ''.join(ch for ch in qe if ch.isdigit())
+                                if val:
+                                    hr_value = float(val)
+                                    if 40 <= hr_value <= 200:
+                                        realtime_metrics['heart_rate'] = hr_value
+                                        confidence = max(confidence, 0.4)
+                        except Exception:
+                            pass
                     else:
                         realtime_metrics['heart_rate'] = None
                 elif isinstance(heart_rate_data.get('heart_rate'), (int, float)):
@@ -489,7 +519,8 @@ class VideoStreamHealthMonitor:
 
             # Real-time respiratory rate analysis
             try:
-                respiratory_data = self.respiratory_detector.analyze_single_frame(frame, primary_landmarks)
+                # Use face ROI for respiratory analysis for better signal
+                respiratory_data = self.respiratory_detector.analyze_single_frame(face_roi, primary_landmarks)
                 confidence = 0.0
                 
                 if isinstance(respiratory_data.get('respiratory_rate'), str):
@@ -503,6 +534,20 @@ class VideoStreamHealthMonitor:
                                 confidence = 0.7
                         except (ValueError, IndexError):
                             realtime_metrics['respiratory_rate'] = None
+                    elif 'analyzing' in rr_str or 'out of range' in rr_str:
+                        # Provide a quick estimate while buffers build
+                        try:
+                            quick_rr = self.respiratory_detector.quick_respiratory_rate_estimate(face_roi, primary_landmarks)
+                            ql = quick_rr.lower()
+                            if 'breaths/min' in ql:
+                                val = ''.join(ch for ch in ql if ch.isdigit())
+                                if val:
+                                    rr_value = float(val)
+                                    if 8 <= rr_value <= 40:
+                                        realtime_metrics['respiratory_rate'] = rr_value
+                                        confidence = max(confidence, 0.4)
+                        except Exception:
+                            pass
                     else:
                         realtime_metrics['respiratory_rate'] = None
                 elif isinstance(respiratory_data.get('respiratory_rate'), (int, float)):
@@ -576,8 +621,15 @@ class VideoStreamHealthMonitor:
             ])
             
             if successful_detections > 0:
-                base_confidence = min(0.5 + (successful_detections * 0.1), 0.9)
+                base_confidence = min(0.6 + (successful_detections * 0.15), 0.95)
                 realtime_metrics['confidence'] = max(realtime_metrics['confidence'], base_confidence)
+
+            # Ensure analysis_data carries an overall confidence used by the frontend aggregator
+            try:
+                existing_confidence = float(analysis_data.get('confidence', 0.0) or 0.0)
+            except (TypeError, ValueError):
+                existing_confidence = 0.0
+            analysis_data['confidence'] = max(existing_confidence, float(realtime_metrics.get('confidence') or 0.0))
 
             return {
                 'realtime_metrics': realtime_metrics,
@@ -615,15 +667,17 @@ async def websocket_video_stream(websocket: WebSocket):
                 payload = json.loads(data)
             except json.JSONDecodeError as e:
                 logger.error(f"Invalid JSON received: {e}")
-                await websocket.send_json({
-                    "error": "Invalid JSON format",
-                    "timestamp": datetime.now().isoformat()
-                })
+                if websocket.client_state == WebSocketState.CONNECTED:
+                    await websocket.send_json({
+                        "error": "Invalid JSON format",
+                        "timestamp": datetime.now().isoformat()
+                    })
                 continue
 
             # Handle ping messages
             if payload.get('type') == 'ping':
-                await websocket.send_json({"type": "pong"})
+                if websocket.client_state == WebSocketState.CONNECTED:
+                    await websocket.send_json({"type": "pong"})
                 continue
 
             # Process video frame
@@ -638,42 +692,55 @@ async def websocket_video_stream(websocket: WebSocket):
                     continue
 
                 try:
+                    # If client provided FPS, align detectors to incoming stream
+                    try:
+                        incoming_fps = int(payload.get('frame_metadata', {}).get('fps') or 0)
+                        if incoming_fps >= 3 and incoming_fps <= 60:
+                            video_monitor.heart_rate_detector.fps = incoming_fps
+                            video_monitor.respiratory_detector.fps = incoming_fps
+                    except Exception:
+                        pass
+
                     # Decode base64 image
                     image_bytes = base64.b64decode(base64_image)
                     nparr = np.frombuffer(image_bytes, np.uint8)
                     frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
                     if frame is None:
-                        await websocket.send_json({
-                            "error": "Failed to decode image",
-                            "timestamp": datetime.now().isoformat()
-                        })
+                        if websocket.client_state == WebSocketState.CONNECTED:
+                            await websocket.send_json({
+                                "error": "Failed to decode image",
+                                "timestamp": datetime.now().isoformat()
+                            })
                         continue
 
                     # Process the video frame
                     result = await video_monitor.process_video_frame(frame)
                     
                     # Send results back to client
-                    await websocket.send_json(result)
+                    if websocket.client_state == WebSocketState.CONNECTED:
+                        await websocket.send_json(result)
                     
                 except Exception as e:
                     logger.error(f"Frame processing error: {e}")
-                    await websocket.send_json({
-                        "error": f"Frame processing failed: {str(e)}",
-                        "timestamp": datetime.now().isoformat()
-                    })
+                    if websocket.client_state == WebSocketState.CONNECTED:
+                        await websocket.send_json({
+                            "error": f"Frame processing failed: {str(e)}",
+                            "timestamp": datetime.now().isoformat()
+                        })
 
     except WebSocketDisconnect:
         logger.info("Video stream WebSocket client disconnected")
     except Exception as e:
         logger.error(f"Video stream WebSocket error: {e}")
-        try:
-            await websocket.send_json({
-                "error": f"Server error: {str(e)}",
-                "timestamp": datetime.now().isoformat()
-            })
-        except:
-            pass
+        if websocket.client_state == WebSocketState.CONNECTED:
+            try:
+                await websocket.send_json({
+                    "error": f"Server error: {str(e)}",
+                    "timestamp": datetime.now().isoformat()
+                })
+            except Exception:
+                pass
     finally:
         logger.info("Video stream WebSocket session ended")
 

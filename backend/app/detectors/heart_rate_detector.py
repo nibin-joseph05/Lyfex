@@ -139,7 +139,9 @@ class HeartRateDetector:
     def calculate_heart_rate_fft(self, signal: np.ndarray) -> Tuple[float, float]:
         """Calculate heart rate using FFT analysis"""
         try:
-            if len(signal) < 60:  # Need at least 2 seconds of data
+            # Allow analysis with ~2 seconds of data based on fps (min 30 samples)
+            min_samples = max(int(self.fps * 2), 30)
+            if len(signal) < min_samples:
                 return 0.0, 0.0
             
             # Perform FFT
@@ -179,7 +181,9 @@ class HeartRateDetector:
     def calculate_heart_rate_peaks(self, signal: np.ndarray) -> Tuple[float, float]:
         """Calculate heart rate using peak detection method"""
         try:
-            if len(signal) < 60:
+            # Allow analysis with ~2 seconds of data based on fps (min 30 samples)
+            min_samples = max(int(self.fps * 2), 30)
+            if len(signal) < min_samples:
                 return 0.0, 0.0
             
             # Find peaks in the signal
@@ -277,15 +281,16 @@ class HeartRateDetector:
             self.roi_history.append(signal_value)
             self.timestamps.append(time.time())
             
-            # Need sufficient history for analysis
-            if len(self.roi_history) < 60:  # 2 seconds minimum
+            # Need sufficient history for analysis (~5 seconds of data)
+            required_samples = max(int(self.fps * 5), 30)
+            if len(self.roi_history) < required_samples:
                 return {
                     'heart_rate': 'Analyzing...',
                     'confidence': 0.0,
                     'hrv_score': 0.0,
                     'signal_quality': 'Building buffer',
                     'samples_collected': len(self.roi_history),
-                    'samples_needed': 60
+                    'samples_needed': required_samples
                 }
             
             # Convert to list for processing

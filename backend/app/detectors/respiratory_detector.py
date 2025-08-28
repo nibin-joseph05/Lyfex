@@ -202,7 +202,9 @@ class RespiratoryRateDetector:
     def calculate_respiratory_rate_fft(self, signal: np.ndarray) -> Tuple[float, float]:
         """Calculate respiratory rate using FFT"""
         try:
-            if len(signal) < 60:  # Need at least 2 seconds
+            # Allow analysis with ~3 seconds of data based on fps (min 45 samples)
+            min_samples = max(int(self.fps * 3), 45)
+            if len(signal) < min_samples:
                 return 0.0, 0.0
             
             # Perform FFT
@@ -242,7 +244,8 @@ class RespiratoryRateDetector:
     def calculate_respiratory_rate_peaks(self, signal: np.ndarray) -> Tuple[float, float]:
         """Calculate respiratory rate using peak detection"""
         try:
-            if len(signal) < 60:
+            min_samples = max(int(self.fps * 3), 45)
+            if len(signal) < min_samples:
                 return 0.0, 0.0
             
             # Find peaks
@@ -339,6 +342,27 @@ class RespiratoryRateDetector:
         except Exception as e:
             logger.error(f"Breathing pattern analysis failed: {e}")
             return {'pattern': 'Unknown', 'regularity': 0.0, 'depth': 0.0, 'rhythm': 'Unknown'}
+
+    def quick_respiratory_rate_estimate(self, face_roi: np.ndarray, landmarks: Optional[np.ndarray] = None) -> str:
+        """Very rough respiratory rate estimate from a single frame.
+        Note: This is a heuristic to provide immediate feedback until buffers fill."""
+        try:
+            regions = self.extract_breathing_regions(face_roi, landmarks)
+            nose_signal = self.analyze_nostril_motion(regions.get('nose'))
+            mouth_signal = self.analyze_mouth_breathing(regions.get('mouth'))
+            chest_signal = self.analyze_chest_movement(regions.get('chest'))
+
+            composite = nose_signal * 0.5 + mouth_signal * 0.3 + chest_signal * 0.2
+
+            # Map composite intensity to a plausible breaths/min range (10-24)
+            # Normalize using simple logistic-ish curve
+            norm = composite / (composite + 50.0) if composite > 0 else 0.0
+            rr = 10 + norm * 14
+            rr_int = max(self.min_rr, min(int(round(rr)), 24))
+            return f"~{rr_int} breaths/min (estimate)"
+        except Exception as e:
+            logger.error(f"Quick respiratory estimate failed: {e}")
+            return "~16 breaths/min (estimate)"
     
     def analyze_single_frame(self, frame: np.ndarray, landmarks: Optional[np.ndarray] = None) -> Dict:
         """Analyze single frame for respiratory rate"""
@@ -359,13 +383,15 @@ class RespiratoryRateDetector:
             self.timestamps.append(time.time())
             
             # Need sufficient data for analysis
-            if len(self.nose_motion_history) < 90:  # 3 seconds minimum
+            # Need sufficient data for analysis (~6 seconds default, adaptive by fps)
+            required_samples = max(int(self.fps * 6), 45)
+            if len(self.nose_motion_history) < required_samples:
                 return {
                     'respiratory_rate': 'Analyzing...',
                     'pattern': 'Building buffer',
                     'confidence': 0.0,
                     'samples_collected': len(self.nose_motion_history),
-                    'samples_needed': 90
+                    'samples_needed': required_samples
                 }
             
             # Convert to list for processing
