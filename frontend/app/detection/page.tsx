@@ -15,6 +15,19 @@ type RealTimePoint = {
   stress_level?: number;
   emotion?: string;
   confidence: number;
+  // Additional analysis fields from backend
+  fatigue_level?: string | number;
+  alertness_score?: number;
+  facial_asymmetry?: string;
+  tremor_detected?: boolean | string;
+  eye_movement_analysis?: string;
+  skin_overall_health?: string;
+  skin_color_analysis?: string;
+  hydration_estimate?: string | number;
+  hrv_score?: number;
+  blood_pressure?: string;
+  cognitive_load?: number;
+  pain_level?: number;
 };
 type CurrentMetrics = {
   heartRate: number | null;
@@ -36,6 +49,10 @@ type FinalResultsType = {
   skinAnalysis: string;
   skinColor: string;
   hydrationStatus: string;
+  hrv: string;
+  bloodPressure: string;
+  cognitiveLoad: string;
+  painLevel: string;
   overallHealthScore: string;
   healthStatus: string;
   recommendations: string[];
@@ -84,6 +101,10 @@ export default function RealTimeDetectionPage() {
     skinAnalysis: 'N/A', 
     skinColor: 'N/A', 
     hydrationStatus: 'N/A',
+    hrv: 'N/A',
+    bloodPressure: 'N/A',
+    cognitiveLoad: 'N/A',
+    painLevel: 'N/A',
     overallHealthScore: 'N/A', 
     healthStatus: 'N/A', 
     recommendations: [],
@@ -96,6 +117,8 @@ export default function RealTimeDetectionPage() {
   const router = useRouter();
   const streamInterval = useRef<ReturnType<typeof setInterval> | null>(null);
   const sessionStartTime = useRef<number | null>(null);
+  const timerInterval = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
   const analysisData = useRef<RealTimePoint[]>([]);
   const reconnectAttempts = useRef<number>(0);
   const cameraIsReady = useRef<boolean>(false);
@@ -150,6 +173,16 @@ export default function RealTimeDetectionPage() {
       console.log('Video stream WebSocket connected');
       setDetectionActive(true);
       sessionStartTime.current = Date.now();
+      setElapsedSeconds(0);
+      if (timerInterval.current) {
+        clearInterval(timerInterval.current);
+      }
+      timerInterval.current = setInterval(() => {
+        if (sessionStartTime.current) {
+          const secs = Math.floor((Date.now() - sessionStartTime.current) / 1000);
+          setElapsedSeconds(secs);
+        }
+      }, 1000);
       analysisData.current = [];
       reconnectAttempts.current = 0;
       startVideoStream();
@@ -225,6 +258,10 @@ export default function RealTimeDetectionPage() {
         ws.current = null;
       }
       stopVideoStream();
+      if (timerInterval.current) {
+        clearInterval(timerInterval.current);
+        timerInterval.current = null;
+      }
     };
   }, [isStreaming]);
 
@@ -306,6 +343,10 @@ export default function RealTimeDetectionPage() {
   const handleStopDetection = useCallback(() => {
     setIsStreaming(false);
     setDetectionActive(false);
+    if (timerInterval.current) {
+      clearInterval(timerInterval.current);
+      timerInterval.current = null;
+    }
     
     // Calculate session duration
     const sessionDuration = sessionStartTime.current 
@@ -350,6 +391,10 @@ export default function RealTimeDetectionPage() {
         skinAnalysis: 'N/A',
         skinColor: 'N/A',
         hydrationStatus: 'N/A',
+        hrv: 'N/A',
+        bloodPressure: 'N/A',
+        cognitiveLoad: 'N/A',
+        painLevel: 'N/A',
         overallHealthScore: 'N/A',
         healthStatus: 'Low Confidence',
         recommendations: ['Insufficient data - longer session recommended']
@@ -372,6 +417,10 @@ export default function RealTimeDetectionPage() {
         skinAnalysis: 'N/A',
         skinColor: 'N/A',
         hydrationStatus: 'N/A',
+        hrv: 'N/A',
+        bloodPressure: 'N/A',
+        cognitiveLoad: 'N/A',
+        painLevel: 'N/A',
         overallHealthScore: 'N/A',
         healthStatus: 'Poor Detection Quality',
         recommendations: ['Improve lighting conditions', 'Ensure face is clearly visible']
@@ -381,7 +430,8 @@ export default function RealTimeDetectionPage() {
     // Calculate averages
     const avgHeartRate = Math.round(validData.reduce((sum: number, d: RealTimePoint) => sum + (d.heart_rate || 0), 0) / validData.length);
     const avgRespRate = Math.round(validData.reduce((sum: number, d: RealTimePoint) => sum + (d.respiratory_rate || 0), 0) / validData.length);
-    const avgStress = (validData.reduce((sum: number, d: RealTimePoint) => sum + (d.stress_level || 0), 0) / validData.length).toFixed(1);
+    const avgStressNum = validData.reduce((sum: number, d: RealTimePoint) => sum + (d.stress_level || 0), 0) / validData.length;
+    const avgStress = avgStressNum.toFixed(1);
     
     // Most common emotion
     const emotions = validData.map((d: RealTimePoint) => d.emotion).filter((e): e is string => Boolean(e));
@@ -391,10 +441,61 @@ export default function RealTimeDetectionPage() {
     }, {});
     const dominantEmotion = Object.keys(emotionCounts).reduce((a, b) => emotionCounts[a] > emotionCounts[b] ? a : b, 'Neutral');
 
+    // Derive additional metrics (fatigue, neurological, skin)
+    const pickMostFrequent = (items: (string | undefined | null)[]) => {
+      const filtered = items.filter((v): v is string => typeof v === 'string' && v.length > 0);
+      if (filtered.length === 0) return 'N/A';
+      const counts: Record<string, number> = {};
+      filtered.forEach((v) => { counts[v] = (counts[v] || 0) + 1; });
+      return Object.keys(counts).reduce((a, b) => counts[a] > counts[b] ? a : b);
+    };
+
+    // Fatigue level: prefer string categorical mode, else bucket numeric average
+    let fatigue: string = pickMostFrequent(validData.map(d => typeof d.fatigue_level === 'string' ? d.fatigue_level : undefined));
+    if (fatigue === 'N/A') {
+      const numericFatigue = validData.map(d => typeof d.fatigue_level === 'number' ? d.fatigue_level : null).filter((v): v is number => v !== null);
+      if (numericFatigue.length > 0) {
+        const avgFatigue = numericFatigue.reduce((a, b) => a + b, 0) / numericFatigue.length;
+        fatigue = avgFatigue >= 7 ? 'High' : avgFatigue >= 4 ? 'Moderate' : 'Low';
+      } else {
+        fatigue = 'Analyzing...';
+      }
+    }
+
+    const facialAsymmetry = pickMostFrequent(validData.map(d => d.facial_asymmetry));
+    const tremorDetectedAny = validData.some(d => d.tremor_detected === true || (typeof d.tremor_detected === 'string' && d.tremor_detected.toLowerCase().includes('true')));
+    const tremor = tremorDetectedAny ? 'Detected' : 'Not Detected';
+    const eyeMovement = pickMostFrequent(validData.map(d => d.eye_movement_analysis));
+    const skinAnalysis = pickMostFrequent(validData.map(d => d.skin_overall_health));
+    const skinColor = pickMostFrequent(validData.map(d => d.skin_color_analysis));
+    let hydrationStatus = pickMostFrequent(validData.map(d => typeof d.hydration_estimate === 'string' ? d.hydration_estimate : undefined));
+    if (hydrationStatus === 'N/A') {
+      const hydrationNums = validData.map(d => typeof d.hydration_estimate === 'number' ? d.hydration_estimate : null).filter((v): v is number => v !== null);
+      if (hydrationNums.length > 0) {
+        const avgHydration = hydrationNums.reduce((a, b) => a + b, 0) / hydrationNums.length;
+        hydrationStatus = avgHydration >= 0.66 ? 'Good' : avgHydration >= 0.33 ? 'Moderate' : 'Low';
+      }
+    }
+
+    // HRV average (0-1 scaled placeholder)
+    const hrvValues = validData.map(d => typeof d.hrv_score === 'number' ? d.hrv_score : null).filter((v): v is number => v !== null);
+    const avgHrv = hrvValues.length > 0 ? (hrvValues.reduce((a, b) => a + b, 0) / hrvValues.length) : null;
+
+    // Blood pressure: pick the most frequent categorical value
+    const bloodPressure = pickMostFrequent(validData.map(d => d.blood_pressure));
+
+    // Cognitive load average (0-10)
+    const cogValues = validData.map(d => typeof d.cognitive_load === 'number' ? d.cognitive_load : null).filter((v): v is number => v !== null);
+    const avgCog = cogValues.length > 0 ? (cogValues.reduce((a, b) => a + b, 0) / cogValues.length) : null;
+
+    // Pain level average (0-10)
+    const painValues = validData.map(d => typeof d.pain_level === 'number' ? d.pain_level : null).filter((v): v is number => v !== null);
+    const avgPain = painValues.length > 0 ? (painValues.reduce((a, b) => a + b, 0) / painValues.length) : null;
+
     // Generate health recommendations
     const recommendations = generateRecommendations({
       heartRate: avgHeartRate,
-      stressLevel: parseFloat(avgStress),
+      stressLevel: avgStressNum,
       emotion: dominantEmotion,
       dataQuality: validData.length / dataPoints.length
     });
@@ -411,13 +512,17 @@ export default function RealTimeDetectionPage() {
       respiratoryRate: avgRespRate > 0 ? `${avgRespRate} /min` : 'N/A',
       stressLevel: parseFloat(avgStress) > 0 ? `${avgStress}/10` : 'N/A',
       emotion: dominantEmotion,
-      fatigue: 'Analyzing...',
-      facialAsymmetry: 'Normal',
-      tremor: 'Not Detected',
-      eyeMovement: 'Normal',
-      skinAnalysis: 'Good',
-      skinColor: 'Normal',
-      hydrationStatus: 'Good',
+      fatigue,
+      facialAsymmetry,
+      tremor,
+      eyeMovement,
+      skinAnalysis,
+      skinColor,
+      hydrationStatus,
+      hrv: (avgHrv !== null && !isNaN(avgHrv)) ? `${Math.round(avgHrv * 100)}/100` : 'N/A',
+      bloodPressure: bloodPressure || 'N/A',
+      cognitiveLoad: (avgCog !== null && !isNaN(avgCog)) ? `${avgCog.toFixed(1)}/10` : 'N/A',
+      painLevel: (avgPain !== null && !isNaN(avgPain)) ? `${avgPain.toFixed(1)}/10` : 'N/A',
       overallHealthScore: `${healthScore}/100`,
       healthStatus: getHealthStatus(healthScore),
       recommendations: recommendations
@@ -571,6 +676,98 @@ export default function RealTimeDetectionPage() {
                 <Text style={styles.metricLabel}>Dominant Emotion</Text>
               </View>
             </View>
+
+            {/* Additional Analyses */}
+            {(finalResults.fatigue !== 'N/A' ||
+              finalResults.facialAsymmetry !== 'N/A' ||
+              finalResults.tremor !== 'N/A' ||
+              finalResults.eyeMovement !== 'N/A' ||
+              finalResults.skinAnalysis !== 'N/A' ||
+              finalResults.skinColor !== 'N/A' ||
+              finalResults.hydrationStatus !== 'N/A') && (
+              <>
+                <Text style={styles.sectionTitle}>Additional Analyses</Text>
+                <View style={styles.metricsGrid}>
+                  {finalResults.hrv !== 'N/A' && (
+                    <View style={styles.metricCard}>
+                      <Ionicons name="pulse" size={24} color="#FFD93D" />
+                      <Text style={styles.metricValue}>{finalResults.hrv}</Text>
+                      <Text style={styles.metricLabel}>HRV</Text>
+                    </View>
+                  )}
+                  {finalResults.bloodPressure !== 'N/A' && (
+                    <View style={styles.metricCard}>
+                      <Ionicons name="fitness" size={24} color="#FFD93D" />
+                      <Text style={styles.metricValue}>{finalResults.bloodPressure}</Text>
+                      <Text style={styles.metricLabel}>Blood Pressure</Text>
+                    </View>
+                  )}
+                  {finalResults.cognitiveLoad !== 'N/A' && (
+                    <View style={styles.metricCard}>
+                      <Ionicons name="speedometer" size={24} color="#FFD93D" />
+                      <Text style={styles.metricValue}>{finalResults.cognitiveLoad}</Text>
+                      <Text style={styles.metricLabel}>Cognitive Load</Text>
+                    </View>
+                  )}
+                  {finalResults.painLevel !== 'N/A' && (
+                    <View style={styles.metricCard}>
+                      <Ionicons name="medkit" size={24} color="#FFD93D" />
+                      <Text style={styles.metricValue}>{finalResults.painLevel}</Text>
+                      <Text style={styles.metricLabel}>Pain Level</Text>
+                    </View>
+                  )}
+                  {finalResults.fatigue !== 'N/A' && (
+                    <View style={styles.metricCard}>
+                      <Ionicons name="moon" size={24} color="#A3BFFA" />
+                      <Text style={styles.metricValue}>{finalResults.fatigue}</Text>
+                      <Text style={styles.metricLabel}>Fatigue</Text>
+                    </View>
+                  )}
+                  {finalResults.facialAsymmetry !== 'N/A' && (
+                    <View style={styles.metricCard}>
+                      <Ionicons name="person" size={24} color="#A3BFFA" />
+                      <Text style={styles.metricValue}>{finalResults.facialAsymmetry}</Text>
+                      <Text style={styles.metricLabel}>Facial Asymmetry</Text>
+                    </View>
+                  )}
+                  {finalResults.tremor !== 'N/A' && (
+                    <View style={styles.metricCard}>
+                      <Ionicons name="hand-left" size={24} color="#A3BFFA" />
+                      <Text style={styles.metricValue}>{finalResults.tremor}</Text>
+                      <Text style={styles.metricLabel}>Tremor</Text>
+                    </View>
+                  )}
+                  {finalResults.eyeMovement !== 'N/A' && (
+                    <View style={styles.metricCard}>
+                      <Ionicons name="eye" size={24} color="#A3BFFA" />
+                      <Text style={styles.metricValue}>{finalResults.eyeMovement}</Text>
+                      <Text style={styles.metricLabel}>Eye Movement</Text>
+                    </View>
+                  )}
+                  {finalResults.skinAnalysis !== 'N/A' && (
+                    <View style={styles.metricCard}>
+                      <Ionicons name="color-palette" size={24} color="#A3BFFA" />
+                      <Text style={styles.metricValue}>{finalResults.skinAnalysis}</Text>
+                      <Text style={styles.metricLabel}>Skin Analysis</Text>
+                    </View>
+                  )}
+                  {finalResults.skinColor !== 'N/A' && (
+                    <View style={styles.metricCard}>
+                      <Ionicons name="brush" size={24} color="#A3BFFA" />
+                      <Text style={styles.metricValue}>{finalResults.skinColor}</Text>
+                      <Text style={styles.metricLabel}>Skin Color</Text>
+                    </View>
+                  )}
+                  {finalResults.hydrationStatus !== 'N/A' && (
+                    <View style={styles.metricCard}>
+                      <Ionicons name="water" size={24} color="#A3BFFA" />
+                      <Text style={styles.metricValue}>{finalResults.hydrationStatus}</Text>
+                      <Text style={styles.metricLabel}>Hydration</Text>
+                    </View>
+                  )}
+                </View>
+              </>
+            )}
 
             {finalResults.recommendations.length > 0 && (
               <>
@@ -797,6 +994,15 @@ export default function RealTimeDetectionPage() {
                 {currentMetrics.faceDetected ? "Face Detected" : "No Face"}
               </Text>
             </View>
+
+            {detectionActive && (
+              <View style={styles.timerBadge}>
+                <Ionicons name="time" size={14} color="#E6F1FF" />
+                <Text style={styles.timerText}>
+                  {`${Math.floor(elapsedSeconds / 60)}:${(elapsedSeconds % 60).toString().padStart(2, '0')}`}
+                </Text>
+              </View>
+            )}
           </View>
 
           {/* Instructions overlay */}
@@ -1049,6 +1255,21 @@ const styles = StyleSheet.create({
   faceStatusText: {
     color: '#E6F1FF',
     fontSize: 12,
+    marginLeft: 6,
+  },
+  timerBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 12,
+    marginTop: 8,
+  },
+  timerText: {
+    color: '#E6F1FF',
+    fontSize: 12,
+    fontWeight: 'bold',
     marginLeft: 6,
   },
   instructionsOverlay: {

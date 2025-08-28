@@ -3,6 +3,7 @@ import numpy as np
 from typing import Dict, List, Optional, Tuple
 import logging
 from collections import deque
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,12 @@ class EmotionDetector:
         }
         
         logger.info("Emotion detector initialized with feature-based analysis")
+        # Try to load smile cascade for image-based smile detection fallback
+        try:
+            self.smile_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_smile.xml')
+            self.smile_available = not self.smile_cascade.empty()
+        except Exception:
+            self.smile_available = False
     
     def extract_facial_features(self, face_roi: np.ndarray, landmarks: Optional[np.ndarray] = None) -> Dict:
         """Extract key facial features for emotion analysis"""
@@ -167,7 +174,8 @@ class EmotionDetector:
         features = {
             'brightness_variance': 0.0,
             'edge_density': 0.0,
-            'texture_contrast': 0.0
+            'texture_contrast': 0.0,
+            'smile_score': 0.0
         }
         
         try:
@@ -183,6 +191,27 @@ class EmotionDetector:
             # Texture contrast using GLCM approximation
             glcm = self._calculate_simple_glcm(gray)
             features['texture_contrast'] = float(glcm)
+
+            # Simple smile detection using Haar cascade (fallback)
+            if self.smile_available:
+                try:
+                    smiles = self.smile_cascade.detectMultiScale(
+                        gray,
+                        scaleFactor=1.7,
+                        minNeighbors=22,
+                        minSize=(25, 25)
+                    )
+                    # Use number and size of detections as score
+                    smile_score = 0.0
+                    for (x, y, w, h) in smiles:
+                        area = w * h
+                        smile_score = max(smile_score, area)
+                    # Normalize smile score by face size
+                    h, w = gray.shape[:2]
+                    norm = max(1.0, float(h * w))
+                    features['smile_score'] = float(min(1.0, (smile_score / norm) * 10.0))
+                except Exception:
+                    features['smile_score'] = 0.0
             
         except Exception as e:
             logger.error(f"Image-based feature extraction failed: {e}")
@@ -212,6 +241,7 @@ class EmotionDetector:
             eyebrow_height = features.get('eyebrow_height', 0.0)
             mouth_curvature = features.get('mouth_curvature', 0.0)
             eye_openness = features.get('eye_openness', 0.0)
+            smile_score = features.get('smile_score', 0.0)
             
             # Happy detection
             if mouth_curvature > 2.0:  # Positive mouth curvature (smile)
@@ -220,6 +250,11 @@ class EmotionDetector:
                     emotion_scores['Happy'] += 0.2
                 if mouth_ratio < 0.3:  # Mouth not too open
                     emotion_scores['Happy'] += 0.2
+
+            # Fallback happy boost if landmarks unavailable: rely on image-based smile score
+            if mouth_curvature == 0.0 and smile_score > 0.02:
+                # Boost happy based on detected smile region
+                emotion_scores['Happy'] += min(0.7, 0.3 + smile_score * 0.8)
             
             # Sad detection
             if mouth_curvature < -1.5:  # Negative mouth curvature (frown)
