@@ -376,6 +376,10 @@ class VideoStreamHealthMonitor:
         self.neurological_detector = NeurologicalDetector()
         self.skin_analyzer = SkinAnalyzer()
         self.health_assessor = HealthAssessor()
+        # Smoothing state for face tracking
+        self._prev_face_rect = None  # (x, y, w, h)
+        self._prev_face_center = None  # (cx, cy)
+        self._face_smooth_alpha = 0.6  # EMA factor for smoothing
         
         logger.info("Video Stream Health Monitor initialized for real-time analysis")
 
@@ -410,14 +414,42 @@ class VideoStreamHealthMonitor:
                     'timestamp': datetime.now().isoformat()
                 }
 
-            # Choose the largest detected face to improve stability
-            largest_idx = 0
-            if len(faces) > 1:
+            # Pick face: prefer closest to previous center to reduce jumps; else largest
+            pick_idx = 0
+            if len(faces) > 1 and self._prev_face_center is not None:
+                pcx, pcy = self._prev_face_center
+                def dist2(face):
+                    x, y, w, h = face
+                    cx, cy = x + w/2, y + h/2
+                    return (cx - pcx)**2 + (cy - pcy)**2
+                pick_idx = int(min(range(len(faces)), key=lambda i: dist2(faces[i])))
+            elif len(faces) > 1:
+                # Fallback to largest area
                 areas = [(w * h) for (x, y, w, h) in faces]
-                largest_idx = int(max(range(len(areas)), key=lambda i: areas[i]))
-            primary_face = faces[largest_idx]
-            primary_landmarks = (landmarks[largest_idx]
-                                 if landmarks and len(landmarks) > largest_idx else None)
+                pick_idx = int(max(range(len(areas)), key=lambda i: areas[i]))
+
+            # Selected face and landmarks
+            sel_face = faces[pick_idx]
+            sel_landmarks = (landmarks[pick_idx]
+                             if landmarks and len(landmarks) > pick_idx else None)
+
+            # Smooth the face rectangle using EMA to reduce jitter
+            if self._prev_face_rect is None:
+                primary_face = sel_face
+            else:
+                px, py, pw, ph = self._prev_face_rect
+                x, y, w, h = sel_face
+                a = self._face_smooth_alpha
+                sx = int(a * x + (1 - a) * px)
+                sy = int(a * y + (1 - a) * py)
+                sw = int(a * w + (1 - a) * pw)
+                sh = int(a * h + (1 - a) * ph)
+                primary_face = (sx, sy, sw, sh)
+            # Update previous center
+            cx, cy = primary_face[0] + primary_face[2]/2, primary_face[1] + primary_face[3]/2
+            self._prev_face_center = (cx, cy)
+            self._prev_face_rect = primary_face
+            primary_landmarks = sel_landmarks
             processed_frame = self.image_processor.preprocess_image(frame)
             # Compute face ROI and map landmarks into ROI coordinates for downstream detectors
             px, py, pw, ph = primary_face
