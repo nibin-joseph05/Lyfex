@@ -4,7 +4,7 @@ import { View, Text, StyleSheet } from 'react-native';
 export default function Footer() {
   return (
     <View style={styles.footer}>
-      <Text style={styles.text}>© 2025 Lyfex Technologies</Text>
+      <Text style={styles.text}>© Created By Nibin</Text>
       <Text style={styles.text}>Medical-grade health insights</Text>
       <View style={styles.versionBadge}>
         <Text style={styles.version}>v1.0.0</Text>
