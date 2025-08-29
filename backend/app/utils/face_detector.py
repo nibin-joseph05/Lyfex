@@ -2,6 +2,9 @@ import cv2
 import dlib
 import numpy as np
 import logging
+import os
+import bz2
+import urllib.request
 from typing import List, Tuple, Optional
 
 logger = logging.getLogger(__name__)
@@ -16,14 +19,35 @@ class FaceDetector:
             # Initialize dlib face detector and landmark predictor
             self.dlib_detector = dlib.get_frontal_face_detector()
             
-            # Try to load the landmark predictor (requires shape_predictor_68_face_landmarks.dat)
+            # Ensure landmark model is available (auto-download if missing)
+            model_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'models')
+            os.makedirs(model_dir, exist_ok=True)
+            model_path = os.path.join(model_dir, 'shape_predictor_68_face_landmarks.dat')
+            if not os.path.exists(model_path):
+                try:
+                    logger.warning("Landmark model not found. Downloading dlib 68-point model (~100MB)...")
+                    url = 'http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2'
+                    bz2_path = model_path + '.bz2'
+                    # Download
+                    urllib.request.urlretrieve(url, bz2_path)
+                    # Decompress
+                    with bz2.BZ2File(bz2_path, 'rb') as f_in, open(model_path, 'wb') as f_out:
+                        f_out.write(f_in.read())
+                    try:
+                        os.remove(bz2_path)
+                    except Exception:
+                        pass
+                    logger.info("Landmark model downloaded and extracted.")
+                except Exception as e:
+                    logger.error(f"Failed to download landmark model: {e}")
+            # Try to load the landmark predictor (requires the .dat file)
             try:
-                self.landmark_predictor = dlib.shape_predictor('models/shape_predictor_68_face_landmarks.dat')
+                self.landmark_predictor = dlib.shape_predictor(model_path)
                 self.landmarks_available = True
                 logger.info("Dlib landmark predictor loaded successfully")
-            except:
+            except Exception as e:
                 self.landmarks_available = False
-                logger.warning("Dlib landmark predictor not found. Facial landmark detection disabled.")
+                logger.warning(f"Dlib landmark predictor not available. Facial landmark detection disabled. Error: {e}")
             
             logger.info("Face detector initialized successfully")
             

@@ -197,9 +197,9 @@ class EmotionDetector:
                 try:
                     smiles = self.smile_cascade.detectMultiScale(
                         gray,
-                        scaleFactor=1.7,
-                        minNeighbors=22,
-                        minSize=(25, 25)
+                        scaleFactor=1.5,
+                        minNeighbors=15,
+                        minSize=(22, 22)
                     )
                     # Use number and size of detections as score
                     smile_score = 0.0
@@ -209,7 +209,7 @@ class EmotionDetector:
                     # Normalize smile score by face size
                     h, w = gray.shape[:2]
                     norm = max(1.0, float(h * w))
-                    features['smile_score'] = float(min(1.0, (smile_score / norm) * 10.0))
+                    features['smile_score'] = float(min(1.0, (smile_score / norm) * 12.0))
                 except Exception:
                     features['smile_score'] = 0.0
             
@@ -243,18 +243,18 @@ class EmotionDetector:
             eye_openness = features.get('eye_openness', 0.0)
             smile_score = features.get('smile_score', 0.0)
             
-            # Happy detection
-            if mouth_curvature > 2.0:  # Positive mouth curvature (smile)
+            # Happy detection (more permissive)
+            if mouth_curvature > 1.2:  # Positive mouth curvature (smile)
                 emotion_scores['Happy'] += 0.6
-                if eye_ratio > 0.2:  # Eyes somewhat closed (smiling eyes)
+                if eye_ratio > 0.19:  # Slightly permissive eyes criterion
                     emotion_scores['Happy'] += 0.2
-                if mouth_ratio < 0.3:  # Mouth not too open
+                if mouth_ratio < 0.4:  # Allow slightly more mouth openness
                     emotion_scores['Happy'] += 0.2
 
             # Fallback happy boost if landmarks unavailable: rely on image-based smile score
-            if mouth_curvature == 0.0 and smile_score > 0.02:
+            if mouth_curvature == 0.0 and smile_score > 0.01:
                 # Boost happy based on detected smile region
-                emotion_scores['Happy'] += min(0.7, 0.3 + smile_score * 0.8)
+                emotion_scores['Happy'] += min(0.8, 0.35 + smile_score * 0.9)
             
             # Sad detection
             if mouth_curvature < -1.5:  # Negative mouth curvature (frown)
@@ -296,17 +296,28 @@ class EmotionDetector:
                 if eye_ratio < 0.19:  # Slightly narrowed eyes
                     emotion_scores['Disgust'] += 0.3
             
-            # Neutral detection (baseline when other emotions are low)
+            # Neutral detection (baseline when other emotions are low) - less aggressive
             total_other_emotions = sum(score for emotion, score in emotion_scores.items() if emotion != 'Neutral')
-            if total_other_emotions < 0.3:
-                emotion_scores['Neutral'] = 0.8 - total_other_emotions
+            if total_other_emotions < 0.15:
+                emotion_scores['Neutral'] = 0.7 - total_other_emotions
             
-            # Normalize scores
+            # Normalize scores and bias towards Happy when strong smile features are present
             total_score = sum(emotion_scores.values())
             if total_score > 0:
                 emotion_scores = {emotion: score/total_score for emotion, score in emotion_scores.items()}
             else:
                 emotion_scores['Neutral'] = 1.0
+
+            # Final smile override heuristic (helps if curvature underestimates)
+            smile_score = features.get('smile_score', 0.0)
+            mouth_curvature = features.get('mouth_curvature', 0.0)
+            if smile_score > 0.06 or mouth_curvature > 2.0:
+                # Push Happy to be dominant unless another emotion is overwhelmingly higher
+                emotion_scores['Happy'] = max(emotion_scores.get('Happy', 0.0), 0.75)
+                # Renormalize softly
+                s = sum(emotion_scores.values())
+                if s > 0:
+                    emotion_scores = {k: v / s for k, v in emotion_scores.items()}
                 
         except Exception as e:
             logger.error(f"Emotion classification failed: {e}")

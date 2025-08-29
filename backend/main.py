@@ -419,7 +419,23 @@ class VideoStreamHealthMonitor:
             primary_landmarks = (landmarks[largest_idx]
                                  if landmarks and len(landmarks) > largest_idx else None)
             processed_frame = self.image_processor.preprocess_image(frame)
-            face_roi = self.image_processor.extract_face_roi(processed_frame, primary_face)
+            # Compute face ROI and map landmarks into ROI coordinates for downstream detectors
+            px, py, pw, ph = primary_face
+            pad_w = int(pw * 0.1)
+            pad_h = int(ph * 0.1)
+            x1 = max(0, px - pad_w)
+            y1 = max(0, py - pad_h)
+            x2 = min(processed_frame.shape[1], px + pw + pad_w)
+            y2 = min(processed_frame.shape[0], py + ph + pad_h)
+            face_roi = processed_frame[y1:y2, x1:x2]
+            roi_landmarks = None
+            if primary_landmarks is not None:
+                try:
+                    roi_landmarks = primary_landmarks.copy().astype(float)
+                    roi_landmarks[:, 0] -= float(x1)
+                    roi_landmarks[:, 1] -= float(y1)
+                except Exception:
+                    roi_landmarks = None
 
             # Update face detection data
             x, y, w, h = primary_face
@@ -446,7 +462,7 @@ class VideoStreamHealthMonitor:
             realtime_metrics['face_detected'] = True
 
             # Assess face detection quality with more lenient criteria
-            quality_metrics = self.face_detector.validate_face_quality(face_roi, primary_landmarks)
+            quality_metrics = self.face_detector.validate_face_quality(face_roi, roi_landmarks)
             
             # More lenient quality assessment
             quality_score = 0
@@ -469,7 +485,7 @@ class VideoStreamHealthMonitor:
 
             # Real-time heart rate analysis
             try:
-                heart_rate_data = self.heart_rate_detector.analyze_single_frame(face_roi, primary_landmarks)
+                heart_rate_data = self.heart_rate_detector.analyze_single_frame(face_roi, roi_landmarks)
                 confidence = 0.0
                 
                 if isinstance(heart_rate_data.get('heart_rate'), str):
@@ -520,7 +536,7 @@ class VideoStreamHealthMonitor:
             # Real-time respiratory rate analysis
             try:
                 # Use face ROI for respiratory analysis for better signal
-                respiratory_data = self.respiratory_detector.analyze_single_frame(face_roi, primary_landmarks)
+                respiratory_data = self.respiratory_detector.analyze_single_frame(face_roi, roi_landmarks)
                 confidence = 0.0
                 
                 if isinstance(respiratory_data.get('respiratory_rate'), str):
@@ -569,11 +585,11 @@ class VideoStreamHealthMonitor:
 
             # Real-time emotion detection
             try:
-                emotion_data = self.emotion_detector.detect_emotion(face_roi)
+                emotion_data = self.emotion_detector.detect_emotion(face_roi, roi_landmarks)
                 emotion = emotion_data.get('primary_emotion', 'Unknown')
                 
                 # Filter out invalid emotions
-                valid_emotions = ['Happy', 'Sad', 'Angry', 'Surprised', 'Fear', 'Disgust', 'Neutral']
+                valid_emotions = ['Happy', 'Sad', 'Angry', 'Surprise', 'Fear', 'Disgust', 'Neutral']
                 if emotion in valid_emotions:
                     realtime_metrics['emotion'] = emotion
                     analysis_data['emotion'] = emotion
@@ -589,7 +605,7 @@ class VideoStreamHealthMonitor:
 
             # Real-time stress level analysis
             try:
-                stress_data = self.stress_detector.analyze_stress_indicators(face_roi, primary_landmarks, {})
+                stress_data = self.stress_detector.analyze_stress_indicators(face_roi, roi_landmarks, {})
 
                 parsed_stress: float | None = None
 
